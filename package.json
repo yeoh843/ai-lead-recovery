@@ -1,0 +1,12 @@
+{
+  "name": "ai-lead-recovery",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "cd backend && node server.js",
+    "build": "cd backend && npm install"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
