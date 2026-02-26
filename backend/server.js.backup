@@ -1,0 +1,2415 @@
+       import express from 'express';
+import cors from 'cors';
+import jwt from 'jsonwebtoken';
+import bcrypt from 'bcryptjs';
+import { Low } from 'lowdb';
+import { JSONFile } from 'lowdb/node';
+import nodemailer from 'nodemailer';
+import cron from 'node-cron';
+import dotenv from 'dotenv';
+import mammoth from 'mammoth';
+import { load as cheerioLoad } from 'cheerio';
+import fetch from 'node-fetch';
+import multer from 'multer';
+import { google } from 'googleapis';
+
+dotenv.config();
+
+const app = express();
+const PORT = 3000;
+const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
+
+// Google OAuth client
+const oauth2Client = new google.auth.OAuth2(
+  process.env.GOOGLE_CLIENT_ID,
+  process.env.GOOGLE_CLIENT_SECRET,
+  process.env.GOOGLE_REDIRECT_URI
+);
+
+app.use(cors());
+app.use(express.json());
+
+const adapter = new JSONFile('db.json');
+const db = new Low(adapter, {});
+
+await db.read();
+db.data ||= {
+  users: [],
+  leads: [],
+  sequences: [],
+  sequence_steps: [],
+  campaigns: [],
+  email_events: [],
+  lead_sources: [],
+  email_settings: [],
+  ai_drafts: [],
+  email_threads: [],
+  email_history: [], // Track all sent emails (initial + follow-ups)
+  product_profiles: [], // Store product/service information for AI email generation
+  email_templates: [] // Unlayer email templates with design JSON and HTML
+};
+
+// Ensure product_profiles exists even in older databases
+if (!db.data.product_profiles) {
+  db.data.product_profiles = [];
+}
+
+// Ensure email_templates exists
+if (!db.data.email_templates) {
+  db.data.email_templates = [];
+}
+
+// Migrate email_history records to include html_body and attachments fields
+if (db.data.email_history && db.data.email_history.length > 0) {
+  let migrationNeeded = false;
+  db.data.email_history = db.data.email_history.map(record => {
+    if (!record.html_body) {
+      record.html_body = record.body ? record.body.replace(/\n/g, '<br>') : '';
+      migrationNeeded = true;
+    }
+    if (!record.attachments) {
+      record.attachments = [];
+      migrationNeeded = true;
+    }
+    return record;
+  });
+  if (migrationNeeded) {
+    console.log('✓ Migrated email_history records to include html_body and attachments fields');
+  }
+}
+
+await db.write();
+
+const authenticate = (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader) return res.status(401).json({ error: 'No token provided' });
+
+  const token = authHeader.split(' ')[1];
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.userId = decoded.id;
+    next();
+  } catch (error) {
+    return res.status(401).json({ error: 'Invalid token' });
+  }
+};
+
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok' });
+});
+
+app.post('/api/auth/register', async (req, res) => {
+  const { email, password, company_name } = req.body;
+  await db.read();
+  
+  if (db.data.users.find(u => u.email === email)) {
+    return res.status(400).json({ error: 'Email already exists' });
+  }
+
+  const hashedPassword = await bcrypt.hash(password, 10);
+  const user = {
+    id: db.data.users.length + 1,
+    email,
+    password: hashedPassword,
+    company_name: company_name || '',
+    created_at: new Date().toISOString()
+  };
+
+  db.data.users.push(user);
+  await db.write();
+
+  const token = jwt.sign({ id: user.id }, JWT_SECRET, { expiresIn: '7d' });
+  res.json({ token, user: { id: user.id, email: user.email, company_name: user.company_name } });
+});
+
+app.post('/api/auth/login', async (req, res) => {
+  const { email, password } = req.body;
+  await db.read();
+  const user = db.data.users.find(u => u.email === email);
+
+  if (!user || !await bcrypt.compare(password, user.password)) {
+    return res.status(401).json({ error: 'Invalid credentials' });
+  }
+
+  const token = jwt.sign({ id: user.id }, JWT_SECRET, { expiresIn: '7d' });
+  res.json({ token, user: { id: user.id, email: user.email, company_name: user.company_name } });
+});
+
+app.get('/api/auth/me', authenticate, async (req, res) => {
+  await db.read();
+  const user = db.data.users.find(u => u.id === req.userId);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  res.json({ user: { id: user.id, email: user.email, company_name: user.company_name } });
+});
+
+// Google OAuth - Step 1: Initiate OAuth flow
+app.get('/api/auth/google', authenticate, (req, res) => {
+  const authUrl = oauth2Client.generateAuthUrl({
+    access_type: 'offline',
+    prompt: 'consent', // Force consent screen to always get refresh_token
+    scope: [
+      'https://www.googleapis.com/auth/gmail.readonly',
+      'https://www.googleapis.com/auth/gmail.send',
+      'https://www.googleapis.com/auth/userinfo.email'
+    ],
+    state: req.userId.toString() // Pass user ID to callback
+  });
+
+  res.json({ authUrl });
+});
+
+// Google OAuth - Step 2: Handle callback
+app.get('/api/auth/google/callback', async (req, res) => {
+  try {
+    const { code, state } = req.query;
+    const userId = parseInt(state);
+
+    if (!code || !userId) {
+      return res.redirect('http://localhost:5173/settings?error=oauth_failed');
+    }
+
+    // Exchange code for tokens
+    const { tokens } = await oauth2Client.getToken(code);
+
+    // Get user email from Google
+    oauth2Client.setCredentials(tokens);
+    const oauth2 = google.oauth2({ version: 'v2', auth: oauth2Client });
+    const { data } = await oauth2.userinfo.get();
+
+    // Save tokens to database
+    await db.read();
+    const existingSettings = db.data.email_settings.find(s => s.user_id === userId);
+
+    const emailSettings = {
+      user_id: userId,
+      email: data.email,
+      provider: 'gmail',
+      access_token: tokens.access_token,
+      refresh_token: tokens.refresh_token,
+      token_expiry: tokens.expiry_date,
+      auto_send_enabled: false
+    };
+
+    if (existingSettings) {
+      Object.assign(existingSettings, emailSettings);
+    } else {
+      emailSettings.id = db.data.email_settings.length + 1;
+      db.data.email_settings.push(emailSettings);
+    }
+
+    await db.write();
+
+    // Redirect back to frontend settings page
+    res.redirect('http://localhost:5173/settings?success=gmail_connected');
+  } catch (error) {
+    console.error('OAuth callback error:', error);
+    res.redirect('http://localhost:5173/settings?error=oauth_failed');
+  }
+});
+
+app.get('/api/leads', authenticate, async (req, res) => {
+  await db.read();
+  const leads = db.data.leads.filter(l => l.user_id === req.userId);
+  res.json({ leads });
+});
+
+app.post('/api/leads', authenticate, async (req, res) => {
+  const { email, first_name, last_name, company, phone } = req.body;
+  if (!email) return res.status(400).json({ error: 'Email is required' });
+
+  await db.read();
+  const lead = {
+    id: db.data.leads.length + 1,
+    user_id: req.userId,
+    email,
+    first_name: first_name || '',
+    last_name: last_name || '',
+    company: company || '',
+    phone: phone || '',
+    status: 'new',
+    ai_intent: null,
+    created_at: new Date().toISOString()
+  };
+
+  db.data.leads.push(lead);
+  await db.write();
+  res.json({ lead });
+});
+
+app.post('/api/leads/bulk', authenticate, async (req, res) => {
+  const { leads } = req.body;
+  if (!leads || !Array.isArray(leads)) {
+    return res.status(400).json({ error: 'Invalid leads array' });
+  }
+
+  await db.read();
+  let successCount = 0;
+  let failedCount = 0;
+
+  leads.forEach(leadData => {
+    if (!leadData.email) {
+      failedCount++;
+      return;
+    }
+
+    const lead = {
+      id: db.data.leads.length + 1,
+      user_id: req.userId,
+      email: leadData.email,
+      first_name: leadData.first_name || '',
+      last_name: leadData.last_name || '',
+      company: leadData.company || '',
+      phone: leadData.phone || '',
+      status: 'new',
+      ai_intent: null,
+      created_at: new Date().toISOString()
+    };
+
+    db.data.leads.push(lead);
+    successCount++;
+  });
+
+  await db.write();
+  res.json({ success: successCount, failed: failedCount });
+});
+
+app.get('/api/sequences', authenticate, async (req, res) => {
+  await db.read();
+  const sequences = db.data.sequences.filter(s => s.user_id === req.userId);
+  res.json({ sequences });
+});
+
+app.post('/api/sequences', authenticate, async (req, res) => {
+  const { name, description, steps } = req.body;
+  if (!name) return res.status(400).json({ error: 'Sequence name is required' });
+
+  await db.read();
+  const sequence = {
+    id: db.data.sequences.length + 1,
+    user_id: req.userId,
+    name,
+    description: description || '',
+    is_active: true,
+    created_at: new Date().toISOString()
+  };
+
+  db.data.sequences.push(sequence);
+
+  if (steps && Array.isArray(steps)) {
+    steps.forEach((step, index) => {
+      db.data.sequence_steps.push({
+        id: db.data.sequence_steps.length + 1,
+        sequence_id: sequence.id,
+        step_number: index + 1,
+        delay_days: step.delay_days || 0,
+        email_template: step.email_template || ''
+      });
+    });
+  }
+
+  await db.write();
+  res.json({ sequence });
+});
+
+app.get('/api/analytics/dashboard', authenticate, async (req, res) => {
+  await db.read();
+  const userLeads = db.data.leads.filter(l => l.user_id === req.userId);
+  const userSequences = db.data.sequences.filter(s => s.user_id === req.userId);
+  const userCampaigns = db.data.campaigns.filter(c => c.user_id === req.userId);
+
+  const totalLeads = userLeads.length;
+  const totalSent = userCampaigns.reduce((s, c) => s + (c.stats?.sent || 0), 0);
+  const repliesReceived = userLeads.filter(l => l.last_reply_date).length;
+  const replyRate = totalSent > 0 ? Math.round((repliesReceived / totalSent) * 100) : 0;
+
+  const funnel = {};
+  userLeads.forEach(lead => {
+    funnel[lead.status] = (funnel[lead.status] || 0) + 1;
+  });
+
+  const intentCounts = { INTERESTED: 0, NOT_NOW: 0, OBJECTION: 0, GHOSTING: 0, DEAD: 0 };
+  userLeads.forEach(lead => {
+    if (lead.ai_intent && intentCounts[lead.ai_intent] !== undefined) {
+      intentCounts[lead.ai_intent]++;
+    }
+  });
+
+  const hotLeads = userLeads.filter(l => l.ai_intent === 'INTERESTED');
+
+  const sentDrafts = db.data.ai_drafts.filter(d => d.user_id === req.userId && d.status === 'sent' && d.sent_at);
+  let avgTimeToReplyHours = null;
+  if (sentDrafts.length > 0) {
+    let totalHours = 0;
+    let count = 0;
+    for (const d of sentDrafts) {
+      const lead = db.data.leads.find(l => l.id === d.lead_id);
+      if (lead && lead.last_reply_date) {
+        totalHours += (new Date(d.sent_at) - new Date(lead.last_reply_date)) / (1000 * 60 * 60);
+        count++;
+      }
+    }
+    avgTimeToReplyHours = count > 0 ? Math.round((totalHours / count) * 10) / 10 : null;
+  }
+
+  res.json({
+    overview: {
+      total_leads: totalLeads,
+      reply_rate: replyRate,
+      recovered_this_month: hotLeads.length,
+      active_sequences: userSequences.filter(s => s.is_active).length,
+      avg_time_to_reply_hours: avgTimeToReplyHours
+    },
+    hot_leads: hotLeads,
+    funnel,
+    intent_counts: intentCounts
+  });
+});
+
+// Email Tracking - Track Opens
+app.get('/api/track/open/:leadId/:campaignId', async (req, res) => {
+  const { leadId, campaignId } = req.params;
+  await db.read();
+  
+  db.data.email_events.push({
+    id: db.data.email_events.length + 1,
+    lead_id: parseInt(leadId),
+    campaign_id: parseInt(campaignId),
+    event_type: 'open',
+    timestamp: new Date().toISOString()
+  });
+  
+  await db.write();
+  
+  // Return 1x1 transparent pixel
+  const pixel = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
+  res.writeHead(200, {
+    'Content-Type': 'image/gif',
+    'Content-Length': pixel.length
+  });
+  res.end(pixel);
+});
+
+// Email Tracking - Track Clicks
+app.get('/api/track/click/:leadId/:campaignId', async (req, res) => {
+  const { leadId, campaignId } = req.params;
+  const { url } = req.query;
+  
+  await db.read();
+  
+  db.data.email_events.push({
+    id: db.data.email_events.length + 1,
+    lead_id: parseInt(leadId),
+    campaign_id: parseInt(campaignId),
+    event_type: 'click',
+    url: url,
+    timestamp: new Date().toISOString()
+  });
+  
+  await db.write();
+  
+  // Redirect to actual URL
+  res.redirect(url || 'https://example.com');
+});
+
+// Create Campaign
+app.post('/api/campaigns', authenticate, async (req, res) => {
+  const { name, subject, body, sequence_id } = req.body;
+  await db.read();
+  
+  const campaign = {
+    id: db.data.campaigns.length + 1,
+    user_id: req.userId,
+    name,
+    subject,
+    body,
+    sequence_id: sequence_id || null,
+    status: 'active',
+    created_at: new Date().toISOString(),
+    stats: {
+      sent: 0,
+      opens: 0,
+      clicks: 0,
+      replies: 0,
+      bounces: 0
+    }
+  };
+  
+  db.data.campaigns.push(campaign);
+  await db.write();
+  
+  res.json({ campaign });
+});
+
+// Get Campaign Analytics
+app.get('/api/campaigns/:id/analytics', authenticate, async (req, res) => {
+  await db.read();
+  
+  const campaign = db.data.campaigns.find(c => 
+    c.id === parseInt(req.params.id) && c.user_id === req.userId
+  );
+  
+  if (!campaign) {
+    return res.status(404).json({ error: 'Campaign not found' });
+  }
+  
+  const events = db.data.email_events.filter(e => e.campaign_id === campaign.id);
+  
+  const uniqueOpens = new Set(events.filter(e => e.event_type === 'open').map(e => e.lead_id)).size;
+  const uniqueClicks = new Set(events.filter(e => e.event_type === 'click').map(e => e.lead_id)).size;
+  
+  const analytics = {
+    campaign: campaign.name,
+    sent: campaign.stats.sent,
+    opens: uniqueOpens,
+    clicks: uniqueClicks,
+    replies: campaign.stats.replies,
+    bounces: campaign.stats.bounces,
+    open_rate: campaign.stats.sent > 0 ? Math.round((uniqueOpens / campaign.stats.sent) * 100) : 0,
+    click_rate: campaign.stats.sent > 0 ? Math.round((uniqueClicks / campaign.stats.sent) * 100) : 0,
+    reply_rate: campaign.stats.sent > 0 ? Math.round((campaign.stats.replies / campaign.stats.sent) * 100) : 0
+  };
+  
+  res.json(analytics);
+});
+
+// Get All Campaigns
+app.get('/api/campaigns', authenticate, async (req, res) => {
+  await db.read();
+  
+  const userCampaigns = db.data.campaigns.filter(c => c.user_id === req.userId);
+  
+  const campaignsWithStats = userCampaigns.map(campaign => {
+    const events = db.data.email_events.filter(e => e.campaign_id === campaign.id);
+    const uniqueOpens = new Set(events.filter(e => e.event_type === 'open').map(e => e.lead_id)).size;
+    const uniqueClicks = new Set(events.filter(e => e.event_type === 'click').map(e => e.lead_id)).size;
+    
+    return {
+      ...campaign,
+      stats: {
+        ...campaign.stats,
+        opens: uniqueOpens,
+        clicks: uniqueClicks
+      }
+    };
+  });
+  
+  res.json({ campaigns: campaignsWithStats });
+});
+
+// Track Lead Source
+app.post('/api/leads/:id/source', authenticate, async (req, res) => {
+  const { source, campaign_id, cost } = req.body;
+  await db.read();
+  
+  const lead = db.data.leads.find(l => 
+    l.id === parseInt(req.params.id) && l.user_id === req.userId
+  );
+  
+  if (!lead) {
+    return res.status(404).json({ error: 'Lead not found' });
+  }
+  
+  db.data.lead_sources.push({
+    id: db.data.lead_sources.length + 1,
+    lead_id: lead.id,
+    source: source, // 'linkedin', 'website', 'referral', etc.
+    campaign_id: campaign_id || null,
+    cost: cost || 0,
+    created_at: new Date().toISOString()
+  });
+  
+  await db.write();
+  
+  res.json({ success: true });
+});
+
+// Generate Initial Email with AI
+app.post('/api/leads/:id/generate-initial-email', authenticate, async (req, res) => {
+  await db.read();
+
+  const lead = db.data.leads.find(l =>
+    l.id === parseInt(req.params.id) && l.user_id === req.userId
+  );
+
+  if (!lead) {
+    return res.status(404).json({ error: 'Lead not found' });
+  }
+
+  if (!process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY === 'demo-mode') {
+    return res.status(400).json({ error: 'ANTHROPIC_API_KEY is not set. Add your API key in backend .env for AI email generation.' });
+  }
+
+  try {
+    // Get product profile for context
+    const productProfile = db.data.product_profiles.find(p => p.user_id === req.userId);
+
+    // Build product context for AI
+    let productContext = '';
+    if (productProfile) {
+      productContext = `
+
+YOUR PRODUCT/SERVICE INFORMATION:
+- Product: ${productProfile.product_name || 'Your Product'}
+- Description: ${productProfile.product_description || 'A valuable solution'}
+- Key Benefits: ${productProfile.key_benefits || 'Helps solve important problems'}
+- Target Audience: ${productProfile.target_audience || 'Businesses like theirs'}
+- Pain Points We Solve: ${productProfile.pain_points || 'Common challenges'}
+- Unique Selling Points: ${productProfile.unique_selling_points || 'What makes us different'}
+${productProfile.success_stories ? `- Success Stories: ${productProfile.success_stories}` : ''}
+${productProfile.special_offers ? `- Special Offer: ${productProfile.special_offers}` : ''}
+- Call-to-Action: ${productProfile.call_to_action || 'Schedule a quick call to learn more'}
+
+Use this information to make the email relevant and persuasive. Focus on how your product solves their specific pain points.`;
+    }
+
+    // Generate initial email content using AI
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-5-20250929',
+        max_tokens: 300,
+        messages: [{
+          role: 'user',
+          content: `Write a professional, persuasive initial outreach email to a potential lead. Keep it under 100 words.
+
+Lead details:
+- Name: ${lead.first_name} ${lead.last_name}
+- Company: ${lead.company || 'their company'}
+- Email: ${lead.email}
+${productContext}
+
+Write a compelling email that:
+1. Introduces yourself and your product briefly
+2. Mentions a specific pain point they likely face
+3. Explains how your product solves that problem (with key benefit)
+4. Includes a clear call-to-action
+5. Is personalized and doesn't feel like spam
+6. Sounds natural and conversational
+
+Write ONLY the email body (no subject line). Be warm but professional.
+
+Email:`
+        }]
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error('AI email generation failed');
+    }
+
+    const aiData = await response.json();
+    const emailBody = aiData.content[0].text.trim();
+
+    res.json({ email_body: emailBody });
+  } catch (error) {
+    console.error('AI generation error:', error);
+    res.status(500).json({ error: 'Failed to generate email with AI' });
+  }
+});
+
+// Generate Email Content (Guided Template - only middle sections)
+app.post('/api/leads/:id/generate-email-content', authenticate, async (req, res) => {
+  await db.read();
+
+  const lead = db.data.leads.find(l =>
+    l.id === parseInt(req.params.id) && l.user_id === req.userId
+  );
+
+  if (!lead) {
+    return res.status(404).json({ error: 'Lead not found' });
+  }
+
+  if (!process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY === 'demo-mode') {
+    return res.status(400).json({ error: 'ANTHROPIC_API_KEY is not set. Add your API key in backend .env for AI email generation.' });
+  }
+
+  try {
+    // Get product profile for context
+    const productProfile = db.data.product_profiles.find(p => p.user_id === req.userId);
+
+    // Build product context for AI
+    let productContext = '';
+    if (productProfile) {
+      productContext = `
+
+YOUR PRODUCT/SERVICE INFORMATION:
+- Product: ${productProfile.product_name || 'Your Product'}
+- Description: ${productProfile.product_description || 'A valuable solution'}
+- Key Benefits: ${productProfile.key_benefits || 'Helps solve important problems'}
+- Target Audience: ${productProfile.target_audience || 'Businesses like theirs'}
+- Pain Points We Solve: ${productProfile.pain_points || 'Common challenges'}
+- Unique Selling Points: ${productProfile.unique_selling_points || 'What makes us different'}
+${productProfile.success_stories ? `- Success Stories: ${productProfile.success_stories}` : ''}
+${productProfile.special_offers ? `- Special Offer: ${productProfile.special_offers}` : ''}
+- Call-to-Action: ${productProfile.call_to_action || 'Schedule a quick call to learn more'}
+
+Use this information to make the email relevant and persuasive.`;
+    }
+
+    // Generate only the middle content (context, main message, CTA) using AI
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-5-20250929',
+        max_tokens: 400,
+        messages: [{
+          role: 'user',
+          content: `Generate ONLY the middle content sections for an email to a potential lead. Return EXACTLY three sections separated by "---":
+
+Lead details:
+- Name: ${lead.first_name} ${lead.last_name}
+- Company: ${lead.company || 'their company'}
+- Email: ${lead.email}
+${productContext}
+
+Generate these three sections:
+
+1. CONTEXT (1-2 sentences): Why you're reaching out and what caught your attention about their company
+2. MAIN MESSAGE (3-4 sentences): Explain your product/service, key benefits, and how it solves their pain points. Include relevant success stories or statistics if available.
+3. CALL TO ACTION (1-2 sentences): A clear, specific next step (e.g., schedule a call, request a demo)
+
+Format your response EXACTLY like this (use "---" as separator):
+
+Context section here
+
+---
+
+Main message section here
+
+---
+
+Call to action section here`
+        }]
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error('AI content generation failed');
+    }
+
+    const aiData = await response.json();
+    const fullContent = aiData.content[0].text.trim();
+
+    // Parse the three sections
+    const sections = fullContent.split('---').map(s => s.trim());
+
+    res.json({
+      context: sections[0] || '',
+      main_message: sections[1] || '',
+      call_to_action: sections[2] || ''
+    });
+  } catch (error) {
+    console.error('AI content generation error:', error);
+    res.status(500).json({ error: 'Failed to generate email content with AI' });
+  }
+});
+
+// Send Initial Email to Lead
+app.post('/api/leads/:id/send-initial-email', authenticate, async (req, res) => {
+  const { email_body, subject, html_body, attachments } = req.body;
+
+  if (!email_body) {
+    return res.status(400).json({ error: 'Email body is required' });
+  }
+
+  // Validate total attachment size (25MB limit for Gmail)
+  if (attachments && attachments.length > 0) {
+    const totalSize = attachments.reduce((sum, att) => sum + (att.size || 0), 0);
+    const maxSize = 25 * 1024 * 1024; // 25MB (Gmail limit)
+    if (totalSize > maxSize) {
+      return res.status(400).json({
+        error: `Total attachment size (${(totalSize / 1024 / 1024).toFixed(2)}MB) exceeds 25MB Gmail limit`
+      });
+    }
+  }
+
+  await db.read();
+
+  const lead = db.data.leads.find(l =>
+    l.id === parseInt(req.params.id) && l.user_id === req.userId
+  );
+
+  const settings = db.data.email_settings.find(s => s.user_id === req.userId);
+  const user = db.data.users.find(u => u.id === req.userId);
+
+  if (!lead) {
+    return res.status(404).json({ error: 'Lead not found' });
+  }
+
+  if (!settings || !settings.email) {
+    return res.status(400).json({ error: 'Email settings not configured. Please set your email in Settings.' });
+  }
+
+  try {
+    // Send the email
+    const emailSubject = subject || `Quick question about ${lead.company || 'your business'}`;
+    const senderName = `${user.company_name || 'Your Team'}`;
+
+    // Call sendEmail with HTML and attachments support
+    await sendEmail(settings, lead.email, emailSubject, email_body, senderName, {
+      html: html_body,
+      attachments: attachments || []
+    });
+
+    // Update lead with email tracking info
+    lead.initial_email_sent = true;
+    lead.initial_email_sent_date = new Date().toISOString();
+    lead.email_count = (lead.email_count || 0) + 1;
+    lead.last_email_sent_date = new Date().toISOString();
+    lead.status = 'contacted';
+
+    // Store email in history with new fields
+    db.data.email_history.push({
+      id: db.data.email_history.length + 1,
+      lead_id: lead.id,
+      user_id: req.userId,
+      email_type: 'initial',
+      subject: emailSubject,
+      body: email_body,
+      html_body: html_body || email_body.replace(/\n/g, '<br>'),
+      attachments: attachments ? attachments.map(att => ({
+        filename: att.filename,
+        size: att.size,
+        content_type: att.content_type
+      })) : [],
+      sent_at: new Date().toISOString(),
+      status: 'sent'
+    });
+
+    await db.write();
+
+    res.json({ success: true, lead });
+  } catch (error) {
+    console.error('Send email error:', error);
+    res.status(500).json({ error: 'Failed to send email' });
+  }
+});
+
+// AI Reply Analysis
+app.post('/api/leads/:id/analyze-reply', authenticate, async (req, res) => {
+  const { reply_text } = req.body;
+  
+  if (!reply_text) {
+    return res.status(400).json({ error: 'Reply text is required' });
+  }
+  if (!process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY === 'demo-mode') {
+    return res.status(400).json({ error: 'ANTHROPIC_API_KEY is not set. Add your API key in backend .env for AI analysis.' });
+  }
+  
+  await db.read();
+  
+  const lead = db.data.leads.find(l => 
+    l.id === parseInt(req.params.id) && l.user_id === req.userId
+  );
+  
+  if (!lead) {
+    return res.status(404).json({ error: 'Lead not found' });
+  }
+  
+  try {
+    // Call Claude API for AI analysis
+    const analysisResponse = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001', // HAIKU - Fast & cheap for classification
+        max_tokens: 200,
+        messages: [{
+          role: 'user',
+          content: `Analyze this email reply and classify the lead's intent. Reply ONLY with one of these exact words: INTERESTED, NOT_NOW, OBJECTION, GHOSTING, or DEAD.
+
+Classification Rules:
+- INTERESTED: They explicitly want to buy, schedule a call, talk, meet, or show buying interest (e.g., "I'm interested", "let's schedule", "can we talk", "sounds good let's do it")
+- NOT_NOW: They explicitly postpone with specific timing (e.g., "not now", "maybe later", "next month", "check back in Q2")
+- OBJECTION: They raise concerns, questions, or hesitations (e.g., "too expensive", "not sure if", "concerned about")
+- DEAD: Clear rejection (e.g., "not interested", "no thanks", "remove me", "stop emailing")
+- GHOSTING: Vague, non-committal, or unclear responses (e.g., "thanks", "ok", "noted") - use this as default for ambiguous replies
+
+Email reply: "${reply_text}"
+
+Classification:`
+        }]
+      })
+    });
+
+    let ai_intent = 'GHOSTING'; // Default - conservative fallback for unclear responses
+    let ai_reasoning = '';
+    
+    if (analysisResponse.ok) {
+      const aiData = await analysisResponse.json();
+      let raw = aiData.content[0].text.trim().toUpperCase();
+      // Sometimes API returns extra text; take first valid word
+      const validIntents = ['INTERESTED', 'NOT_NOW', 'OBJECTION', 'GHOSTING', 'DEAD'];
+      const found = validIntents.find(v => raw === v || raw.startsWith(v + ' ') || raw.includes('\n' + v));
+      if (found) ai_intent = found;
+      else if (validIntents.includes(raw)) ai_intent = raw;
+      
+      // Get reasoning
+      const reasoningResponse = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': process.env.ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01'
+        },
+        body: JSON.stringify({
+          model: 'claude-haiku-4-5-20251001', // HAIKU - Simple explanation task
+          max_tokens: 150,
+          messages: [{
+            role: 'user',
+            content: `Based on this reply: "${reply_text}"
+
+Why is this classified as ${ai_intent}? Give a 1-sentence explanation.`
+          }]
+        })
+      });
+      
+      if (reasoningResponse.ok) {
+        const reasoningData = await reasoningResponse.json();
+        ai_reasoning = reasoningData.content[0].text.trim();
+      }
+    }
+    
+    // Classify objection sub-type if intent is OBJECTION
+    let objection_subtype = null;
+    if (ai_intent === 'OBJECTION') {
+      const subtypeResponse = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': process.env.ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01'
+        },
+        body: JSON.stringify({
+          model: 'claude-haiku-4-5-20251001', // HAIKU - Simple categorization
+          max_tokens: 100,
+          messages: [{
+            role: 'user',
+            content: `Classify this objection into ONE category. Reply ONLY with one of these exact words: PRICE, TIMING, FIT_NEEDS, TRUST, or OTHER.
+
+Objection Categories:
+- PRICE: Cost, budget, or pricing concerns (e.g., "too expensive", "can't afford", "outside our budget")
+- TIMING: Timing or scheduling concerns (e.g., "not the right time", "too busy now", "maybe next quarter")
+- FIT_NEEDS: Product/service fit or feature concerns (e.g., "doesn't have X feature", "not sure it fits our needs", "looking for something else")
+- TRUST: Trust, credibility, or proof concerns (e.g., "never heard of you", "need references", "prove it works")
+- OTHER: Any other objection type
+
+Email reply: "${reply_text}"
+
+Category:`
+          }]
+        })
+      });
+
+      if (subtypeResponse.ok) {
+        const subtypeData = await subtypeResponse.json();
+        let raw = subtypeData.content[0].text.trim().toUpperCase();
+        const validSubtypes = ['PRICE', 'TIMING', 'FIT_NEEDS', 'TRUST', 'OTHER'];
+        const found = validSubtypes.find(v => raw === v || raw.startsWith(v + ' ') || raw.includes('\n' + v));
+        if (found) objection_subtype = found;
+        else if (validSubtypes.includes(raw)) objection_subtype = raw;
+        else objection_subtype = 'OTHER';
+      }
+    }
+
+    // Determine decision recommendation based on intent and context
+    let decision_recommendation = 'DRAFT_ONLY'; // Default to safe option
+
+    switch(ai_intent) {
+      case 'INTERESTED':
+        // Hot leads should be sent quickly, but with human approval for safety
+        decision_recommendation = 'AUTO_SEND';
+        break;
+      case 'NOT_NOW':
+        // Wait and follow up later
+        decision_recommendation = 'WAIT';
+        break;
+      case 'OBJECTION':
+        // Objections need careful handling - draft only
+        decision_recommendation = 'DRAFT_ONLY';
+        break;
+      case 'GHOSTING':
+        // Vague responses - try different approach later
+        decision_recommendation = 'WAIT';
+        break;
+      case 'DEAD':
+        // Clear rejection - stop following up
+        decision_recommendation = 'STOP';
+        break;
+    }
+
+    // Update lead with AI analysis
+    lead.ai_intent = ai_intent;
+    lead.ai_reasoning = ai_reasoning;
+    lead.objection_subtype = objection_subtype;
+    lead.decision_recommendation = decision_recommendation;
+    lead.last_reply = reply_text;
+    lead.last_reply_date = new Date().toISOString();
+    
+    // Generate draft for INTERESTED/OBJECTION so user can send reply
+    let draftId = null;
+    let auto_sent = false;
+    if (ai_intent === 'INTERESTED' || ai_intent === 'OBJECTION') {
+      try {
+        const draftBody = await generateAIResponse(lead, reply_text, ai_intent);
+        if (draftBody) {
+          const newDraft = {
+            id: db.data.ai_drafts.length + 1,
+            lead_id: lead.id,
+            user_id: req.userId,
+            draft_body: draftBody,
+            ai_intent: ai_intent,
+            status: 'pending',
+            created_at: new Date().toISOString()
+          };
+
+          db.data.ai_drafts.push(newDraft);
+          await db.write();
+          draftId = newDraft.id;
+
+          // Check if we should auto-send based on settings and recommendation
+          const user = db.data.users.find(u => u.id === req.userId);
+          const emailSettings = db.data.email_settings.find(s => s.user_id === req.userId);
+
+          // Auto-send conditions:
+          // 1. User has auto_send_all enabled (bypass all approvals) OR
+          // 2. Decision recommendation is AUTO_SEND AND lead has auto_send_enabled AND email settings allow auto-send
+          const shouldAutoSend = (
+            (user && user.auto_send_all) ||
+            (decision_recommendation === 'AUTO_SEND' &&
+             lead.auto_send_enabled !== false &&
+             emailSettings &&
+             emailSettings.auto_send_enabled)
+          );
+
+          if (shouldAutoSend && emailSettings) {
+            try {
+              await sendEmail(emailSettings, lead.email, 'Re: Following up', draftBody);
+              newDraft.status = 'sent';
+              newDraft.sent_at = new Date().toISOString();
+              newDraft.final_body = draftBody;
+              lead.status = 'replied';
+              auto_sent = true;
+              await db.write();
+            } catch (sendError) {
+              console.error('Auto-send failed:', sendError);
+              // Draft remains in pending state for manual review
+            }
+          }
+        }
+      } catch (e) {
+        console.error('Draft generation:', e);
+      }
+    }
+    
+    // Status: analyzed = we analyzed their reply; replied = we actually sent a reply to them
+    if (ai_intent === 'INTERESTED') {
+      lead.status = 'interested';
+    } else if (ai_intent === 'DEAD') {
+      lead.status = 'dead';
+    } else {
+      lead.status = 'analyzed';
+    }
+    
+    await db.write();
+    
+    // Generate recommendation
+    let recommendation = '';
+    switch(ai_intent) {
+      case 'INTERESTED':
+        recommendation = '🔥 HOT LEAD! Contact them immediately - they want to buy!';
+        break;
+      case 'NOT_NOW':
+        recommendation = '⏰ Follow up in 2-4 weeks. Set a reminder.';
+        break;
+      case 'OBJECTION':
+        recommendation = '💡 Send case study or testimonial addressing their concern.';
+        break;
+      case 'GHOSTING':
+        recommendation = '👻 Try a different approach - change subject line or angle.';
+        break;
+      case 'DEAD':
+        recommendation = '❌ Move on. Focus energy on better prospects.';
+        break;
+    }
+    
+    res.json({
+      ai_intent,
+      ai_reasoning,
+      objection_subtype,
+      decision_recommendation,
+      recommendation,
+      draft_id: draftId,
+      auto_sent,
+      lead: {
+        id: lead.id,
+        first_name: lead.first_name,
+        last_name: lead.last_name,
+        status: lead.status
+      }
+    });
+    
+  } catch (error) {
+    console.error('AI Analysis Error:', error);
+    
+    // Fallback: Simple keyword-based analysis
+    const lowerReply = reply_text.toLowerCase();
+    let ai_intent = 'GHOSTING'; // Conservative default
+    let ai_reasoning = 'Analyzed using keyword detection (AI API unavailable)';
+
+    // Check for clear interest signals first (highest priority)
+    if (lowerReply.includes('interested') || lowerReply.includes('yes') || lowerReply.includes('sounds good') ||
+        lowerReply.includes('schedule') || lowerReply.includes('call me') || lowerReply.includes('let\'s talk') ||
+        lowerReply.includes('lets talk') || lowerReply.includes('can we talk') || lowerReply.includes('want to discuss')) {
+      ai_intent = 'INTERESTED';
+    }
+    // Check for clear rejection
+    else if (lowerReply.includes('not interested') || lowerReply.includes('no thanks') ||
+             lowerReply.includes('stop') || lowerReply.includes('unsubscribe')) {
+      ai_intent = 'DEAD';
+    }
+    // Check for specific timing delays
+    else if ((lowerReply.includes('later') || lowerReply.includes('next month') ||
+              lowerReply.includes('next quarter') || lowerReply.includes('not now')) &&
+             !lowerReply.includes('interested')) {
+      ai_intent = 'NOT_NOW';
+    }
+    // Check for concerns/objections
+    else if (lowerReply.includes('but ') || lowerReply.includes('however') ||
+             lowerReply.includes('concern') || lowerReply.includes('expensive') ||
+             lowerReply.includes('not sure')) {
+      ai_intent = 'OBJECTION';
+    }
+    // Otherwise defaults to GHOSTING (vague/unclear)
+    
+    // Classify objection sub-type using keywords if intent is OBJECTION
+    let objection_subtype = null;
+    if (ai_intent === 'OBJECTION') {
+      if (lowerReply.includes('price') || lowerReply.includes('expensive') || lowerReply.includes('cost') || lowerReply.includes('budget')) {
+        objection_subtype = 'PRICE';
+      } else if (lowerReply.includes('timing') || lowerReply.includes('busy') || lowerReply.includes('later') || lowerReply.includes('time')) {
+        objection_subtype = 'TIMING';
+      } else if (lowerReply.includes('trust') || lowerReply.includes('reference') || lowerReply.includes('proof') || lowerReply.includes('credib')) {
+        objection_subtype = 'TRUST';
+      } else if (lowerReply.includes('fit') || lowerReply.includes('feature') || lowerReply.includes('need')) {
+        objection_subtype = 'FIT_NEEDS';
+      } else {
+        objection_subtype = 'OTHER';
+      }
+    }
+
+    // Determine decision recommendation
+    let decision_recommendation = 'DRAFT_ONLY';
+    switch(ai_intent) {
+      case 'INTERESTED':
+        decision_recommendation = 'AUTO_SEND';
+        break;
+      case 'NOT_NOW':
+      case 'GHOSTING':
+        decision_recommendation = 'WAIT';
+        break;
+      case 'OBJECTION':
+        decision_recommendation = 'DRAFT_ONLY';
+        break;
+      case 'DEAD':
+        decision_recommendation = 'STOP';
+        break;
+    }
+
+    lead.ai_intent = ai_intent;
+    lead.ai_reasoning = ai_reasoning;
+    lead.objection_subtype = objection_subtype;
+    lead.decision_recommendation = decision_recommendation;
+    lead.last_reply = reply_text;
+    lead.status = ai_intent === 'INTERESTED' ? 'interested' : (ai_intent === 'DEAD' ? 'dead' : 'analyzed');
+
+    await db.write();
+
+    res.json({
+      ai_intent,
+      ai_reasoning,
+      objection_subtype,
+      decision_recommendation,
+      recommendation: 'AI analysis unavailable, using keyword detection',
+      lead: {
+        id: lead.id,
+        first_name: lead.first_name,
+        last_name: lead.last_name,
+        status: lead.status
+      }
+    });
+  }
+});
+
+// ============================================
+// EMAIL SYSTEM - IMAP/SMTP
+// ============================================
+
+// Save Email Settings
+app.post('/api/settings/email', authenticate, async (req, res) => {
+  const { email, imap_host, imap_port, imap_user, imap_password, smtp_host, smtp_port, smtp_user, smtp_password, auto_send_enabled } = req.body;
+
+  await db.read();
+
+  const existingSettings = db.data.email_settings.find(s => s.user_id === req.userId);
+
+  // Don't overwrite password if it's masked (••••••••)
+  const imapPassword = (imap_password && imap_password !== '••••••••')
+    ? imap_password
+    : existingSettings?.imap?.password || imap_password;
+
+  const smtpPassword = (smtp_password && smtp_password !== '••••••••')
+    ? smtp_password
+    : existingSettings?.smtp?.password || smtp_password;
+
+  const settings = {
+    user_id: req.userId,
+    email,
+    imap: {
+      host: imap_host,
+      port: imap_port || 993,
+      user: imap_user,
+      password: imapPassword,
+      tls: true
+    },
+    smtp: {
+      host: smtp_host,
+      port: smtp_port || 587,
+      user: smtp_user,
+      password: smtpPassword
+    },
+    auto_send_enabled: auto_send_enabled || false,
+    last_checked: existingSettings?.last_checked || null
+  };
+
+  if (existingSettings) {
+    Object.assign(existingSettings, settings);
+  } else {
+    settings.id = db.data.email_settings.length + 1;
+    db.data.email_settings.push(settings);
+  }
+
+  await db.write();
+
+  res.json({ success: true, message: 'Email settings saved' });
+});
+
+// Disconnect Gmail OAuth
+app.delete('/api/auth/google', authenticate, async (req, res) => {
+  try {
+    await db.read();
+
+    const settings = db.data.email_settings.find(s => s.user_id === req.userId);
+
+    if (settings && settings.provider === 'gmail') {
+      // Remove from database
+      const index = db.data.email_settings.indexOf(settings);
+      if (index > -1) {
+        db.data.email_settings.splice(index, 1);
+      }
+      await db.write();
+    }
+
+    res.json({ success: true, message: 'Gmail disconnected' });
+  } catch (error) {
+    console.error('Disconnect error:', error);
+    res.status(500).json({ error: 'Failed to disconnect Gmail' });
+  }
+});
+
+// Get Email Settings
+app.get('/api/settings/email', authenticate, async (req, res) => {
+  await db.read();
+
+  const settings = db.data.email_settings.find(s => s.user_id === req.userId);
+
+  if (!settings) {
+    return res.json({ configured: false });
+  }
+
+  // Check if OAuth (Gmail) is configured
+  if (settings.provider === 'gmail' && settings.access_token) {
+    return res.json({
+      configured: true,
+      provider: 'gmail',
+      email: settings.email,
+      auto_send_enabled: settings.auto_send_enabled,
+      last_checked: settings.last_checked
+    });
+  }
+
+  // Return IMAP settings (password masked for security)
+  res.json({
+    configured: true,
+    email: settings.email,
+    imap_host: settings.imap?.host || '',
+    imap_port: settings.imap?.port || 993,
+    imap_user: settings.imap?.user || '',
+    imap_password: settings.imap?.password ? '••••••••' : '', // Masked
+    auto_send_enabled: settings.auto_send_enabled,
+    last_checked: settings.last_checked
+  });
+});
+
+// Get AI Automation Settings
+app.get('/api/settings/automation', authenticate, async (req, res) => {
+  await db.read();
+
+  const user = db.data.users.find(u => u.id === req.userId);
+
+  if (!user) {
+    return res.status(404).json({ error: 'User not found' });
+  }
+
+  res.json({
+    ai_automation_enabled: user.ai_automation_enabled || false,
+    auto_send_all: user.auto_send_all || false
+  });
+});
+
+// Update AI Automation Settings
+app.post('/api/settings/automation', authenticate, async (req, res) => {
+  const { ai_automation_enabled, auto_send_all } = req.body;
+
+  await db.read();
+
+  const user = db.data.users.find(u => u.id === req.userId);
+
+  if (!user) {
+    return res.status(404).json({ error: 'User not found' });
+  }
+
+  user.ai_automation_enabled = ai_automation_enabled !== undefined ? ai_automation_enabled : user.ai_automation_enabled;
+  user.auto_send_all = auto_send_all !== undefined ? auto_send_all : user.auto_send_all;
+  user.updated_at = new Date().toISOString();
+
+  await db.write();
+
+  res.json({
+    success: true,
+    ai_automation_enabled: user.ai_automation_enabled,
+    auto_send_all: user.auto_send_all
+  });
+});
+
+// PRODUCT PROFILE - For AI Email Generation Context
+// ============================================
+
+// Get Product Profile
+app.get('/api/settings/product-profile', authenticate, async (req, res) => {
+  await db.read();
+
+  const profile = db.data.product_profiles.find(p => p.user_id === req.userId);
+
+  if (!profile) {
+    return res.json({ configured: false });
+  }
+
+  res.json({
+    configured: true,
+    ...profile
+  });
+});
+
+// Save Product Profile
+app.post('/api/settings/product-profile', authenticate, async (req, res) => {
+  const {
+    product_name,
+    product_description,
+    key_benefits,
+    target_audience,
+    pain_points,
+    unique_selling_points,
+    success_stories,
+    special_offers,
+    call_to_action
+  } = req.body;
+
+  await db.read();
+
+  const existingProfile = db.data.product_profiles.find(p => p.user_id === req.userId);
+
+  const profile = {
+    user_id: req.userId,
+    product_name,
+    product_description,
+    key_benefits,
+    target_audience,
+    pain_points,
+    unique_selling_points,
+    success_stories,
+    special_offers,
+    call_to_action,
+    updated_at: new Date().toISOString()
+  };
+
+  if (existingProfile) {
+    Object.assign(existingProfile, profile);
+  } else {
+    profile.id = db.data.product_profiles.length + 1;
+    profile.created_at = new Date().toISOString();
+    db.data.product_profiles.push(profile);
+  }
+
+  await db.write();
+
+  res.json({ success: true, message: 'Product profile saved' });
+});
+
+// Smart AI Product Extraction - Upload files/URLs/text and AI extracts product info
+// ============================================
+
+// Configure multer for file uploads (product extraction)
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
+  fileFilter: (req, file, cb) => {
+    const allowedTypes = ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                          'application/msword', 'text/plain', 'text/csv', 'application/vnd.ms-powerpoint',
+                          'application/vnd.openxmlformats-officedocument.presentationml.presentation'];
+    if (allowedTypes.includes(file.mimetype) || file.originalname.match(/\.(pdf|docx|doc|txt|csv|ppt|pptx)$/i)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Invalid file type. Supported: PDF, DOCX, TXT, CSV, PPT'));
+    }
+  }
+});
+
+// Configure multer for email attachments (includes images)
+const emailAttachmentUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB per file
+  fileFilter: (req, file, cb) => {
+    const allowedTypes = [
+      'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml',
+      'application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/msword', 'text/plain', 'text/csv',
+      'application/vnd.ms-powerpoint', 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    ];
+    if (allowedTypes.includes(file.mimetype) ||
+        file.originalname.match(/\.(jpg|jpeg|png|gif|webp|svg|pdf|docx|doc|txt|csv|ppt|pptx|xls|xlsx)$/i)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Invalid file type. Supported: images, PDF, DOCX, TXT, CSV, PPT, XLS'));
+    }
+  }
+});
+
+// Email Attachment Upload Endpoint
+app.post('/api/email/upload-attachment', authenticate, emailAttachmentUpload.single('file'), async (req, res) => {
+  try {
+    const file = req.file;
+
+    if (!file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    // Return file as base64 for frontend to store temporarily
+    res.json({
+      filename: file.originalname,
+      content_type: file.mimetype,
+      size: file.size,
+      content: file.buffer.toString('base64')
+    });
+  } catch (error) {
+    console.error('File upload error:', error);
+    res.status(500).json({ error: error.message || 'Failed to upload file' });
+  }
+});
+
+// AI Product Extraction Endpoint
+app.post('/api/settings/product-extract', authenticate, upload.single('file'), async (req, res) => {
+  console.log('📤 Product extraction request received');
+  console.log('File:', req.file ? req.file.originalname : 'None');
+  console.log('URL:', req.body.url || 'None');
+  console.log('Text:', req.body.text_content ? 'Yes' : 'None');
+
+  try {
+    const { url, text_content } = req.body;
+    const file = req.file;
+
+    if (!file && !url && !text_content) {
+      console.log('❌ Error: No content provided');
+      return res.status(400).json({ error: 'Please provide a file, URL, or text content' });
+    }
+
+    if (!process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY === 'demo-mode') {
+      console.log('❌ Error: ANTHROPIC_API_KEY not set');
+      return res.status(400).json({ error: 'ANTHROPIC_API_KEY is not set' });
+    }
+
+    console.log('✅ Starting AI extraction...');
+
+    let extractedText = '';
+
+    // Extract text from file
+    if (file) {
+      try {
+        if (file.mimetype === 'application/pdf' || file.originalname.endsWith('.pdf')) {
+          // Import and use pdf-parse v2.x (class-based API)
+          const { PDFParse } = await import('pdf-parse');
+          const parser = new PDFParse({ data: file.buffer });
+          const result = await parser.getText();
+          await parser.destroy(); // Clean up resources
+          console.log('✅ PDF extracted, text length:', result.text.length);
+          extractedText = result.text;
+        } else if (file.mimetype.includes('wordprocessingml') || file.originalname.match(/\.docx?$/i)) {
+          const result = await mammoth.extractRawText({ buffer: file.buffer });
+          extractedText = result.value;
+        } else if (file.mimetype === 'text/plain' || file.originalname.endsWith('.txt')) {
+          extractedText = file.buffer.toString('utf-8');
+        } else if (file.mimetype === 'text/csv' || file.originalname.endsWith('.csv')) {
+          extractedText = file.buffer.toString('utf-8');
+        } else if (file.originalname.match(/\.pptx?$/i)) {
+          // For PPT, extract what we can (basic text extraction)
+          extractedText = file.buffer.toString('utf-8').replace(/[^\x20-\x7E\n]/g, ' ');
+        }
+      } catch (parseError) {
+        console.error('File parsing error:', parseError);
+        return res.status(400).json({ error: 'Failed to parse file. Please try a different format.' });
+      }
+    }
+
+    // Extract text from URL
+    if (url) {
+      try {
+        const urlResponse = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+        const html = await urlResponse.text();
+        const $ = cheerioLoad(html);
+
+        // Remove scripts, styles, etc.
+        $('script, style, nav, footer, iframe').remove();
+
+        // Get main content
+        extractedText = $('body').text().replace(/\s+/g, ' ').trim();
+      } catch (urlError) {
+        console.error('URL fetch error:', urlError);
+        return res.status(400).json({ error: 'Failed to fetch URL. Please check the URL and try again.' });
+      }
+    }
+
+    // Use provided text
+    if (text_content) {
+      extractedText += '\n\n' + text_content;
+    }
+
+    // Limit text length for AI processing
+    if (extractedText.length > 20000) {
+      extractedText = extractedText.substring(0, 20000) + '... (truncated)';
+    }
+
+    // Use Claude AI to extract product information
+    const aiResponse = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-5-20250929',
+        max_tokens: 1500,
+        messages: [{
+          role: 'user',
+          content: `You are a product marketing expert. Extract and generate persuasive product information from the following content.
+
+CONTENT:
+${extractedText}
+
+Extract and create the following in a structured JSON format:
+{
+  "product_name": "Main product or service name",
+  "product_description": "2-3 sentence overview of what it does",
+  "key_benefits": "3-5 compelling benefits (what value it provides)",
+  "target_audience": "Who this product is for",
+  "pain_points": "3-5 specific problems this product solves",
+  "unique_selling_points": "What makes this product unique/different from competitors",
+  "success_stories": "Any testimonials, case studies, or results mentioned",
+  "special_offers": "Any pricing, discounts, or special offers mentioned",
+  "call_to_action": "Suggested call-to-action (e.g., 'Schedule a demo', 'Start free trial')"
+}
+
+Make the output persuasive and sales-focused. If information is missing, infer it intelligently based on the content.
+
+Return ONLY the JSON, no other text.`
+        }]
+      })
+    });
+
+    if (!aiResponse.ok) {
+      const errorText = await aiResponse.text();
+      console.error('❌ AI API Error:', aiResponse.status, errorText);
+      throw new Error(`AI extraction failed: ${aiResponse.status} - ${errorText.substring(0, 200)}`);
+    }
+
+    const aiData = await aiResponse.json();
+    console.log('✅ AI responded successfully');
+    let productInfo;
+
+    try {
+      const jsonText = aiData.content[0].text.trim();
+      // Remove markdown code blocks if present
+      const cleanJson = jsonText.replace(/```json\n?|\n?```/g, '').trim();
+      productInfo = JSON.parse(cleanJson);
+    } catch (parseError) {
+      console.error('JSON parse error:', parseError);
+      return res.status(500).json({ error: 'Failed to parse AI response' });
+    }
+
+    // Save to database
+    await db.read();
+    const existingProfile = db.data.product_profiles.find(p => p.user_id === req.userId);
+
+    const profile = {
+      user_id: req.userId,
+      ...productInfo,
+      updated_at: new Date().toISOString()
+    };
+
+    if (existingProfile) {
+      Object.assign(existingProfile, profile);
+    } else {
+      profile.id = db.data.product_profiles.length + 1;
+      profile.created_at = new Date().toISOString();
+      db.data.product_profiles.push(profile);
+    }
+
+    await db.write();
+
+    console.log('✅ AI extraction successful!');
+    console.log('Product:', productInfo.product_name);
+
+    res.json({
+      success: true,
+      message: '✨ AI successfully learned about your product!',
+      extracted: productInfo  // Changed from extracted_info to match frontend expectation
+    });
+
+  } catch (error) {
+    console.error('❌ Product extraction error:', error);
+    res.status(500).json({ error: 'Failed to extract product information: ' + error.message });
+  }
+});
+
+// ============================================
+// EMAIL TEMPLATES - UNLAYER INTEGRATION
+// ============================================
+
+// Get all email templates for user
+app.get('/api/templates', authenticate, async (req, res) => {
+  await db.read();
+
+  const templates = db.data.email_templates.filter(t => t.user_id === req.userId);
+
+  res.json({ templates });
+});
+
+// Get single template
+app.get('/api/templates/:id', authenticate, async (req, res) => {
+  await db.read();
+
+  const template = db.data.email_templates.find(t =>
+    t.id === parseInt(req.params.id) && t.user_id === req.userId
+  );
+
+  if (!template) {
+    return res.status(404).json({ error: 'Template not found' });
+  }
+
+  res.json({ template });
+});
+
+// Create new template
+app.post('/api/templates', authenticate, async (req, res) => {
+  const { name, subject, design_json, html } = req.body;
+
+  if (!name) {
+    return res.status(400).json({ error: 'Template name is required' });
+  }
+
+  await db.read();
+
+  const template = {
+    id: db.data.email_templates.length + 1,
+    user_id: req.userId,
+    name,
+    subject: subject || '',
+    design_json: design_json || null, // Unlayer design JSON
+    html: html || '', // Exported HTML
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString()
+  };
+
+  db.data.email_templates.push(template);
+  await db.write();
+
+  res.json({ template, message: 'Template created successfully' });
+});
+
+// Update existing template
+app.put('/api/templates/:id', authenticate, async (req, res) => {
+  const { name, subject, design_json, html } = req.body;
+
+  await db.read();
+
+  const template = db.data.email_templates.find(t =>
+    t.id === parseInt(req.params.id) && t.user_id === req.userId
+  );
+
+  if (!template) {
+    return res.status(404).json({ error: 'Template not found' });
+  }
+
+  // Update template fields
+  if (name !== undefined) template.name = name;
+  if (subject !== undefined) template.subject = subject;
+  if (design_json !== undefined) template.design_json = design_json;
+  if (html !== undefined) template.html = html;
+  template.updated_at = new Date().toISOString();
+
+  await db.write();
+
+  res.json({ template, message: 'Template updated successfully' });
+});
+
+// Delete template
+app.delete('/api/templates/:id', authenticate, async (req, res) => {
+  await db.read();
+
+  const templateIndex = db.data.email_templates.findIndex(t =>
+    t.id === parseInt(req.params.id) && t.user_id === req.userId
+  );
+
+  if (templateIndex === -1) {
+    return res.status(404).json({ error: 'Template not found' });
+  }
+
+  db.data.email_templates.splice(templateIndex, 1);
+  await db.write();
+
+  res.json({ message: 'Template deleted successfully' });
+});
+
+// Toggle per-lead auto-send setting
+app.patch('/api/leads/:id/auto-send', authenticate, async (req, res) => {
+  const { auto_send_enabled } = req.body;
+
+  await db.read();
+
+  const lead = db.data.leads.find(l =>
+    l.id === parseInt(req.params.id) && l.user_id === req.userId
+  );
+
+  if (!lead) {
+    return res.status(404).json({ error: 'Lead not found' });
+  }
+
+  lead.auto_send_enabled = auto_send_enabled;
+  lead.updated_at = new Date().toISOString();
+
+  await db.write();
+
+  res.json({
+    success: true,
+    lead_id: lead.id,
+    auto_send_enabled: lead.auto_send_enabled
+  });
+});
+
+// Get Follow-Up Rules (per_intent_settings)
+app.get('/api/settings/follow-up-rules', authenticate, async (req, res) => {
+  await db.read();
+
+  const user = db.data.users.find(u => u.id === req.userId);
+
+  if (!user) {
+    return res.status(404).json({ error: 'User not found' });
+  }
+
+  // Default follow-up rules if none exist
+  const defaultRules = {
+    INTERESTED: { delay_days: 1, max_attempts: 5, after_max: 'review' },
+    NOT_NOW: { delay_days: 7, max_attempts: 3, after_max: 'GHOSTING' },
+    OBJECTION: { delay_days: 3, max_attempts: 4, after_max: 'review' },
+    GHOSTING: { delay_days: 5, max_attempts: 3, after_max: 'DEAD' },
+    DEAD: { delay_days: 30, max_attempts: 1, after_max: 'closed_by_system' }
+  };
+
+  res.json({
+    follow_up_rules: user.per_intent_settings || defaultRules,
+    email_mode: user.email_mode || 'MANUAL' // MANUAL or AUTO
+  });
+});
+
+// Update Follow-Up Rules (per_intent_settings)
+app.post('/api/settings/follow-up-rules', authenticate, async (req, res) => {
+  const { follow_up_rules, email_mode } = req.body;
+
+  await db.read();
+
+  const user = db.data.users.find(u => u.id === req.userId);
+
+  if (!user) {
+    return res.status(404).json({ error: 'User not found' });
+  }
+
+  if (follow_up_rules) {
+    user.per_intent_settings = follow_up_rules;
+  }
+
+  if (email_mode) {
+    user.email_mode = email_mode;
+  }
+
+  user.updated_at = new Date().toISOString();
+
+  await db.write();
+
+  res.json({
+    success: true,
+    follow_up_rules: user.per_intent_settings,
+    email_mode: user.email_mode
+  });
+});
+
+// Check for New Email Replies (Manual trigger)
+app.post('/api/emails/check', authenticate, async (req, res) => {
+  await db.read();
+  
+  const settings = db.data.email_settings.find(s => s.user_id === req.userId);
+  
+  if (!settings) {
+    return res.status(400).json({ error: 'Email not configured. Please add your email settings first.' });
+  }
+  
+  try {
+    const newReplies = await checkEmailReplies(settings, req.userId);
+    
+    settings.last_checked = new Date().toISOString();
+    await db.write();
+    
+    res.json({ 
+      success: true, 
+      new_replies: newReplies.length,
+      replies: newReplies 
+    });
+  } catch (error) {
+    console.error('Email check error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Function to check IMAP for new replies
+async function checkEmailReplies(settings, userId) {
+  return new Promise((resolve, reject) => {
+    const imapConfig = {
+      ...settings.imap,
+      tlsOptions: { rejectUnauthorized: false } // Fix for self-signed certificate issues
+    };
+    const imap = new Imap(imapConfig);
+    const newReplies = [];
+    
+    imap.once('ready', () => {
+      imap.openBox('INBOX', false, (err, box) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+        
+        // Search for unseen emails from last 7 days
+        const searchCriteria = ['UNSEEN', ['SINCE', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)]];
+        
+        imap.search(searchCriteria, (err, results) => {
+          if (err) {
+            reject(err);
+            return;
+          }
+          
+          if (results.length === 0) {
+            imap.end();
+            resolve(newReplies);
+            return;
+          }
+          
+          const fetch = imap.fetch(results, { bodies: '' });
+          
+          fetch.on('message', (msg) => {
+            msg.on('body', (stream) => {
+              simpleParser(stream, async (err, parsed) => {
+                if (err) return;
+                
+                // Find matching lead by email
+                await db.read();
+                const lead = db.data.leads.find(l => 
+                  l.user_id === userId && 
+                  l.email.toLowerCase() === parsed.from.value[0].address.toLowerCase()
+                );
+                
+                if (lead) {
+                  // Analyze with AI
+                  const analysis = await analyzeReplyWithAI(parsed.text || parsed.html);
+                  
+                  // Update lead
+                  lead.ai_intent = analysis.intent;
+                  lead.ai_reasoning = analysis.reasoning;
+                  lead.last_reply = parsed.text;
+                  lead.last_reply_date = new Date().toISOString();
+                  lead.status = analysis.intent === 'INTERESTED' ? 'interested' : (analysis.intent === 'DEAD' ? 'dead' : 'analyzed');
+                  
+                  // Store email thread
+                  db.data.email_threads.push({
+                    id: db.data.email_threads.length + 1,
+                    lead_id: lead.id,
+                    user_id: userId,
+                    from: parsed.from.value[0].address,
+                    subject: parsed.subject,
+                    body: parsed.text,
+                    received_at: new Date().toISOString(),
+                    ai_intent: analysis.intent
+                  });
+                  
+                  await db.write();
+                  
+                  // Generate AI response draft ONLY for INTERESTED or OBJECTION
+                  let draft = null;
+                  if (analysis.intent === 'INTERESTED' || analysis.intent === 'OBJECTION') {
+                    draft = await generateAIResponse(lead, parsed.text, analysis.intent);
+                    
+                    if (draft) {
+                      db.data.ai_drafts.push({
+                        id: db.data.ai_drafts.length + 1,
+                        lead_id: lead.id,
+                        user_id: userId,
+                        draft_body: draft,
+                        ai_intent: analysis.intent,
+                        status: 'pending', // pending, approved, sent, rejected
+                        created_at: new Date().toISOString()
+                      });
+                      
+                      await db.write();
+                    }
+                  }
+                  
+                  newReplies.push({
+                    lead_id: lead.id,
+                    lead_name: `${lead.first_name} ${lead.last_name}`,
+                    intent: analysis.intent,
+                    draft_generated: draft !== null
+                  });
+                  
+                  // Auto-send ONLY if: enabled AND INTERESTED
+                  if (settings.auto_send_enabled && analysis.intent === 'INTERESTED' && draft) {
+                    await sendEmail(settings, lead.email, `Re: ${parsed.subject}`, draft);
+                    lead.status = 'replied';
+                    await db.write();
+                  }
+                }
+              });
+            });
+          });
+          
+          fetch.once('end', () => {
+            imap.end();
+            resolve(newReplies);
+          });
+        });
+      });
+    });
+    
+    imap.once('error', (err) => {
+      reject(err);
+    });
+    
+    imap.connect();
+  });
+}
+
+// AI Reply Analysis Function (Using Haiku - fast & cheap)
+async function analyzeReplyWithAI(replyText) {
+  try {
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY || '',
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({
+        model: 'claude-3-5-haiku-20241022', // HAIKU - Cheapest & fastest
+        max_tokens: 50,
+        messages: [{
+          role: 'user',
+          content: `Classify this email reply as ONE WORD ONLY: INTERESTED, NOT_NOW, OBJECTION, GHOSTING, or DEAD
+
+Reply: "${replyText}"
+
+Classification:`
+        }]
+      })
+    });
+    
+    if (response.ok) {
+      const data = await response.json();
+      const intent = data.content[0].text.trim().toUpperCase();
+      
+      // Simple reasoning
+      const reasoning = {
+        'INTERESTED': 'Reply shows positive engagement and buying signals',
+        'NOT_NOW': 'Lead indicates timing is not right currently',
+        'OBJECTION': 'Reply raises concerns or questions',
+        'GHOSTING': 'Generic or delayed response with low engagement',
+        'DEAD': 'Lead explicitly declined or unsubscribed'
+      };
+      
+      return {
+        intent,
+        reasoning: reasoning[intent] || 'Unable to classify'
+      };
+    }
+  } catch (error) {
+    console.error('AI analysis error:', error);
+  }
+  
+  // Fallback keyword detection
+  const lower = replyText.toLowerCase();
+  if (lower.includes('interested') || lower.includes('yes') || lower.includes('sounds good')) 
+    return { intent: 'INTERESTED', reasoning: 'Keyword: interested/yes' };
+  if (lower.includes('not interested') || lower.includes('no thanks') || lower.includes('unsubscribe')) 
+    return { intent: 'DEAD', reasoning: 'Keyword: not interested' };
+  if (lower.includes('later') || lower.includes('next month') || lower.includes('next quarter')) 
+    return { intent: 'NOT_NOW', reasoning: 'Keyword: timing' };
+  if (lower.includes('but') || lower.includes('however') || lower.includes('concern') || lower.includes('price')) 
+    return { intent: 'OBJECTION', reasoning: 'Keyword: objection' };
+  
+  return { intent: 'GHOSTING', reasoning: 'Default: vague response' };
+}
+
+// AI Response Generation (Using Sonnet - better quality, only for INTERESTED/OBJECTION)
+async function generateAIResponse(lead, originalReply, intent) {
+  // Only generate AI responses for leads worth following up
+  if (intent !== 'INTERESTED' && intent !== 'OBJECTION') {
+    return null; // Don't waste API credits on NOT_NOW/GHOSTING/DEAD
+  }
+  
+  try {
+    const prompts = {
+      INTERESTED: `The lead ${lead.first_name} is INTERESTED! Write a short, enthusiastic follow-up email (max 80 words) to schedule next steps. Be professional but excited.`,
+      OBJECTION: `The lead ${lead.first_name} has concerns about: "${originalReply}". Write a short, empathetic email (max 80 words) addressing their concern with value and social proof.`
+    };
+    
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY || '',
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-5-20250929', // SONNET - Better quality
+        max_tokens: 200,
+        messages: [{
+          role: 'user',
+          content: `${prompts[intent]}
+
+Lead name: ${lead.first_name}
+Company: ${lead.company || 'their company'}
+Their reply: "${originalReply}"
+
+Write ONLY the email body (no subject). Keep under 80 words.
+
+Email:`
+        }]
+      })
+    });
+    
+    if (response.ok) {
+      const data = await response.json();
+      return data.content[0].text.trim();
+    }
+  } catch (error) {
+    console.error('AI generation error:', error);
+  }
+  
+  // Fallback template
+  return `Hi ${lead.first_name},\n\nThank you for your reply! I'd love to continue our conversation.\n\nBest regards`;
+}
+
+// Send Email via Gmail OAuth
+async function sendEmail(settings, to, subject, body, senderName = null, options = {}) {
+  // Validate Gmail OAuth is configured
+  if (!settings.provider || settings.provider !== 'gmail') {
+    throw new Error('❌ Gmail OAuth not configured. Please connect Gmail in Settings.');
+  }
+
+  if (!settings.access_token || !settings.refresh_token) {
+    throw new Error('❌ Gmail tokens missing. Please reconnect Gmail in Settings.');
+  }
+
+  try {
+    // Set up OAuth2 credentials
+    oauth2Client.setCredentials({
+      access_token: settings.access_token,
+      refresh_token: settings.refresh_token,
+      expiry_date: settings.token_expiry
+    });
+
+    // Check if token is expired and refresh if needed
+    if (settings.token_expiry && settings.token_expiry < Date.now()) {
+      console.log('🔄 Refreshing expired Gmail access token...');
+      const { credentials } = await oauth2Client.refreshAccessToken();
+      oauth2Client.setCredentials(credentials);
+
+      // Update stored tokens in database
+      settings.access_token = credentials.access_token;
+      settings.token_expiry = credentials.expiry_date;
+      await db.write();
+    }
+
+    // Create nodemailer transporter with Gmail OAuth2
+    const transporter = nodemailer.createTransport({
+      service: 'gmail',
+      auth: {
+        type: 'OAuth2',
+        user: settings.email,
+        clientId: process.env.GOOGLE_CLIENT_ID,
+        clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+        refreshToken: settings.refresh_token,
+        accessToken: settings.access_token
+      }
+    });
+
+    // Build email with sender name
+    const displayName = senderName || settings.email.split('@')[0];
+    const fromAddress = `${displayName} <${settings.email}>`;
+
+    // Build email options
+    const mailOptions = {
+      from: fromAddress,
+      to,
+      subject,
+      text: body,                                        // Plain text fallback
+      html: options.html || body.replace(/\n/g, '<br>') // HTML version
+    };
+
+    // Add attachments if provided
+    if (options.attachments && options.attachments.length > 0) {
+      mailOptions.attachments = options.attachments.map(att => ({
+        filename: att.filename,
+        content: att.content,
+        encoding: 'base64'
+      }));
+    }
+
+    // Send email
+    const info = await transporter.sendMail(mailOptions);
+    console.log(`✅ Email sent via Gmail to ${to} (from: ${fromAddress}, messageId: ${info.messageId})`);
+
+    return info;
+  } catch (error) {
+    console.error('❌ Failed to send email via Gmail:', error.message);
+    throw new Error(`Gmail send failed: ${error.message}`);
+  }
+}
+
+// Get AI Drafts (for user review)
+app.get('/api/drafts', authenticate, async (req, res) => {
+  await db.read();
+  
+  const userDrafts = db.data.ai_drafts
+    .filter(d => d.user_id === req.userId && d.status === 'pending')
+    .map(draft => {
+      const lead = db.data.leads.find(l => l.id === draft.lead_id);
+      return {
+        ...draft,
+        lead_name: `${lead.first_name} ${lead.last_name}`,
+        lead_email: lead.email,
+        lead_company: lead.company
+      };
+    });
+  
+  res.json({ drafts: userDrafts });
+});
+
+// Approve and Send Draft
+app.post('/api/drafts/:id/send', authenticate, async (req, res) => {
+  const { edited_body } = req.body;
+  
+  await db.read();
+  
+  const draft = db.data.ai_drafts.find(d => d.id === parseInt(req.params.id) && d.user_id === req.userId);
+  const settings = db.data.email_settings.find(s => s.user_id === req.userId);
+  const lead = db.data.leads.find(l => l.id === draft.lead_id);
+  
+  if (!draft || !settings || !lead) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  
+  try {
+    const bodyToSend = edited_body || draft.draft_body;
+    await sendEmail(settings, lead.email, 'Re: Following up', bodyToSend);
+    
+    draft.status = 'sent';
+    draft.sent_at = new Date().toISOString();
+    draft.final_body = bodyToSend;
+    lead.status = 'replied';
+    
+    await db.write();
+    
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Reject Draft
+app.post('/api/drafts/:id/reject', authenticate, async (req, res) => {
+  await db.read();
+  
+  const draft = db.data.ai_drafts.find(d => d.id === parseInt(req.params.id) && d.user_id === req.userId);
+  
+  if (draft) {
+    draft.status = 'rejected';
+    await db.write();
+  }
+  
+  res.json({ success: true });
+});
+
+// Process Follow-Up Emails
+async function processFollowUps() {
+  console.log('🔄 Processing follow-up emails...');
+
+  await db.read();
+
+  for (const user of db.data.users) {
+    try {
+      const settings = db.data.email_settings.find(s => s.user_id === user.id);
+
+      if (!settings || !settings.email) {
+        continue; // Skip users without email configuration
+      }
+
+      // Get user's follow-up rules and mode
+      const defaultRules = {
+        INTERESTED: { delay_days: 1, max_attempts: 5, after_max: 'review' },
+        NOT_NOW: { delay_days: 7, max_attempts: 3, after_max: 'GHOSTING' },
+        OBJECTION: { delay_days: 3, max_attempts: 4, after_max: 'review' },
+        GHOSTING: { delay_days: 5, max_attempts: 3, after_max: 'DEAD' },
+        DEAD: { delay_days: 30, max_attempts: 1, after_max: 'closed_by_system' }
+      };
+
+      const followUpRules = user.per_intent_settings || defaultRules;
+      const emailMode = user.email_mode || 'MANUAL';
+
+      // Find leads that need follow-up
+      const userLeads = db.data.leads.filter(l => l.user_id === user.id);
+
+      for (const lead of userLeads) {
+        // Skip leads that haven't been contacted yet
+        if (!lead.initial_email_sent && !lead.last_email_sent_date) {
+          continue;
+        }
+
+        // Skip leads that are closed or customers
+        if (lead.status === 'customer' || lead.status === 'closed_by_system') {
+          continue;
+        }
+
+        // Get follow-up rules for this lead's intent/status
+        const intent = lead.ai_intent || 'GHOSTING'; // Default to GHOSTING if no intent
+        const rules = followUpRules[intent];
+
+        if (!rules) {
+          continue;
+        }
+
+        const emailCount = lead.email_count || 0;
+        const lastEmailDate = new Date(lead.last_email_sent_date || lead.initial_email_sent_date);
+        const daysSinceLastEmail = (Date.now() - lastEmailDate.getTime()) / (1000 * 60 * 60 * 24);
+
+        // Check if it's time to send a follow-up
+        if (daysSinceLastEmail >= rules.delay_days) {
+          if (emailCount < rules.max_attempts) {
+            // Generate follow-up email
+            console.log(`📧 Generating follow-up for ${lead.first_name} ${lead.last_name} (attempt ${emailCount + 1}/${rules.max_attempts})`);
+
+            try {
+              const followUpBody = await generateFollowUpEmail(lead, emailCount + 1, intent, user.id);
+
+              if (followUpBody) {
+                if (emailMode === 'AUTO') {
+                  // Send immediately
+                  const senderName = `${user.company_name || 'Your Team'}`;
+                  await sendEmail(settings, lead.email, `Following up - ${lead.company || 'our conversation'}`, followUpBody, senderName);
+
+                  // Update lead
+                  lead.email_count = emailCount + 1;
+                  lead.last_email_sent_date = new Date().toISOString();
+
+                  // Store in email history
+                  db.data.email_history.push({
+                    id: db.data.email_history.length + 1,
+                    lead_id: lead.id,
+                    user_id: user.id,
+                    email_type: 'follow_up',
+                    subject: `Following up - ${lead.company || 'our conversation'}`,
+                    body: followUpBody,
+                    sent_at: new Date().toISOString(),
+                    status: 'sent'
+                  });
+
+                  console.log(`✅ Follow-up sent to ${lead.email} (AUTO mode)`);
+                } else {
+                  // Create draft for approval (MANUAL mode)
+                  db.data.ai_drafts.push({
+                    id: db.data.ai_drafts.length + 1,
+                    lead_id: lead.id,
+                    user_id: user.id,
+                    draft_body: followUpBody,
+                    ai_intent: intent,
+                    status: 'pending',
+                    created_at: new Date().toISOString()
+                  });
+
+                  console.log(`📝 Follow-up draft created for ${lead.email} (MANUAL mode)`);
+                }
+              }
+            } catch (error) {
+              console.error(`Failed to generate follow-up for lead ${lead.id}:`, error);
+            }
+          } else {
+            // Max attempts reached - apply after_max action
+            console.log(`⚠️ Max attempts reached for ${lead.first_name} ${lead.last_name} - applying after_max: ${rules.after_max}`);
+
+            if (rules.after_max === 'review') {
+              lead.status = 'review';
+            } else if (rules.after_max === 'closed_by_system') {
+              lead.status = 'closed_by_system';
+            } else {
+              // Change intent (e.g., NOT_NOW -> GHOSTING)
+              lead.ai_intent = rules.after_max;
+              lead.status = rules.after_max.toLowerCase();
+            }
+
+            lead.updated_at = new Date().toISOString();
+          }
+        }
+      }
+
+      await db.write();
+    } catch (error) {
+      console.error(`Error processing follow-ups for user ${user.id}:`, error);
+    }
+  }
+}
+
+// Generate Follow-Up Email with AI
+async function generateFollowUpEmail(lead, attemptNumber, intent, userId) {
+  try {
+    // Get product profile for context
+    await db.read();
+    const productProfile = db.data.product_profiles.find(p => p.user_id === userId);
+
+    let productContext = '';
+    if (productProfile) {
+      productContext = `
+
+YOUR PRODUCT INFO:
+- Product: ${productProfile.product_name || 'Your Product'}
+- Key Benefits: ${productProfile.key_benefits || ''}
+- Unique Value: ${productProfile.unique_selling_points || ''}
+${productProfile.special_offers ? `- Offer: ${productProfile.special_offers}` : ''}
+- CTA: ${productProfile.call_to_action || 'Schedule a call'}
+
+Use this to make your email persuasive and value-focused.`;
+    }
+
+    const prompts = {
+      INTERESTED: `Write a brief follow-up email (max 80 words) to ${lead.first_name} who showed interest. This is follow-up #${attemptNumber}. Reference your product benefits, suggest next steps. Be friendly and move them toward a sale.`,
+      NOT_NOW: `Write a brief check-in email (max 80 words) to ${lead.first_name} who said "not now". This is follow-up #${attemptNumber}. Offer new value or benefit they might have missed. Be respectful but persuasive.`,
+      OBJECTION: `Write a brief follow-up email (max 80 words) to ${lead.first_name} who had concerns. This is follow-up #${attemptNumber}. Address objections with proof points, benefits, or success stories about your product.`,
+      GHOSTING: `Write a brief re-engagement email (max 80 words) to ${lead.first_name} who hasn't responded. This is follow-up #${attemptNumber}. Try a different angle with a specific product benefit. Be helpful, offer value.`,
+      DEAD: `Write a final break-up email (max 60 words) to ${lead.first_name}. This is follow-up #${attemptNumber}. Be gracious, leave the door open, offer one last piece of value about your product.`
+    };
+
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY || '',
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-5-20250929',
+        max_tokens: 200,
+        messages: [{
+          role: 'user',
+          content: `${prompts[intent] || prompts.GHOSTING}
+
+Lead details:
+- Name: ${lead.first_name} ${lead.last_name}
+- Company: ${lead.company || 'their company'}
+- Previous interactions: ${lead.email_count || 0}
+${productContext}
+
+Write ONLY the email body (no subject). Be warm, personalized, persuasive, and professional.
+
+Email:`
+        }]
+      })
+    });
+
+    if (response.ok) {
+      const data = await response.json();
+      return data.content[0].text.trim();
+    }
+  } catch (error) {
+    console.error('AI follow-up generation error:', error);
+  }
+
+  // Fallback template
+  return `Hi ${lead.first_name},\n\nJust wanted to follow up on my previous message. Is this still on your radar?\n\nI'd love to hear your thoughts.\n\nBest regards`;
+}
+
+// Auto-check emails every 5 minutes
+cron.schedule('*/5 * * * *', async () => {
+  console.log('🕒 Auto-checking emails...');
+
+  await db.read();
+
+  for (const settings of db.data.email_settings) {
+    try {
+      await checkEmailReplies(settings, settings.user_id);
+      settings.last_checked = new Date().toISOString();
+    } catch (error) {
+      console.error(`Email check failed for user ${settings.user_id}:`, error);
+    }
+  }
+
+  await db.write();
+});
+
+// Process follow-ups every hour
+cron.schedule('0 * * * *', async () => {
+  await processFollowUps();
+});
+
+app.listen(PORT, () => {
+  console.log(`✅ Backend server running on http://localhost:${PORT}`);
+  console.log(`✅ API ready at http://localhost:${PORT}/api`);
+});

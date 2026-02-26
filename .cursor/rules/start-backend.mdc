@@ -1,0 +1,16 @@
+---
+description: Auto-run backend when user asks to start the app or run the server
+alwaysApply: true
+---
+
+# Start Backend When Asked
+
+When the user says they want to **start the app**, **run the backend**, **run the server**, or **start the project** (or similar), automatically run these commands in the terminal:
+
+1. **PowerShell** (Windows):  
+   `cd "c:\recovery saas\ai-lead-recovery\backend"; npm install; npm start`  
+   Run `npm start` in the **background** (so the server keeps running).
+
+2. If the user has not started the backend and is about to test the app or open the frontend, proactively run the backend start command in the background.
+
+Use the run_terminal_cmd (or equivalent) tool with the backend path and `npm start` in background when the user requests starting/running the app or server.

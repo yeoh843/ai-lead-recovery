@@ -1,0 +1,2495 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🥇 ZeroTouch Mail AI System - Demo</title>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+        }
+    </style>
+</head>
+<body class="bg-gray-50">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+
+        // API Configuration with fallback to demo mode
+        const API_URL = 'http://localhost:3000/api';
+        const DEMO_MODE_KEY = 'demo_mode_enabled';
+
+        // Demo data for offline mode
+        const DEMO_DATA = {
+            user: { id: 1, email: 'demo@example.com', company_name: 'Demo Company' },
+            token: 'demo-token-12345',
+            leads: [
+                { id: 1, first_name: 'John', last_name: 'Doe', email: 'john@example.com', company: 'Acme Inc', status: 'new', ai_intent: null },
+                { id: 2, first_name: 'Jane', last_name: 'Smith', email: 'jane@example.com', company: 'Tech Corp', status: 'replied', ai_intent: 'INTERESTED' },
+                { id: 3, first_name: 'Bob', last_name: 'Wilson', email: 'bob@example.com', company: 'StartUp LLC', status: 'active', ai_intent: 'NOT_NOW' }
+            ],
+            sequences: [
+                { id: 1, name: 'Standard Follow-Up', description: 'Basic 7-day sequence', is_active: true },
+                { id: 2, name: 'Cold Outreach', description: 'Initial contact sequence', is_active: false }
+            ],
+            analytics: {
+                overview: {
+                    total_leads: 45,
+                    reply_rate: 23,
+                    recovered_this_month: 8,
+                    active_sequences: 3
+                },
+                hot_leads: [
+                    { id: 2, first_name: 'Jane', last_name: 'Smith', company: 'Tech Corp' }
+                ],
+                funnel: {
+                    new: 12,
+                    active: 18,
+                    replied: 10,
+                    interested: 5,
+                    dead: 0
+                },
+                campaigns: [
+                    { id: 1, name: 'Cold Outreach Q1', sent: 500, opens: 250, clicks: 50, replies: 25, bounces: 10 },
+                    { id: 2, name: 'Follow-up Sequence', sent: 300, opens: 180, clicks: 45, replies: 30, bounces: 5 },
+                    { id: 3, name: 'Re-engagement', sent: 200, opens: 120, clicks: 30, replies: 20, bounces: 3 }
+                ],
+                sequences: [
+                    { step: 1, name: 'Initial Email', sent: 1000, opens: 450, clicks: 80, replies: 25 },
+                    { step: 2, name: 'Follow-up 1', sent: 975, opens: 390, clicks: 65, replies: 35 },
+                    { step: 3, name: 'Follow-up 2', sent: 940, opens: 330, clicks: 50, replies: 28 },
+                    { step: 4, name: 'Final Touch', sent: 912, opens: 274, clicks: 35, replies: 22 }
+                ],
+                lead_sources: [
+                    { source: 'LinkedIn', leads: 120, conversions: 15, cost: 1200 },
+                    { source: 'Website', leads: 80, conversions: 22, cost: 400 },
+                    { source: 'Referral', leads: 45, conversions: 18, cost: 0 }
+                ]
+            }
+        };
+
+        // Main App Component
+        function App() {
+            const [isAuthenticated, setIsAuthenticated] = useState(false);
+            const [currentView, setCurrentView] = useState('dashboard');
+            const [user, setUser] = useState(null);
+            const [token, setToken] = useState(localStorage.getItem('token'));
+            const [isDemoMode, setIsDemoMode] = useState(localStorage.getItem(DEMO_MODE_KEY) === 'true');
+            const [connectionStatus, setConnectionStatus] = useState('checking');
+
+            useEffect(() => {
+                checkConnection();
+            }, []);
+
+            useEffect(() => {
+                if (token) {
+                    if (isDemoMode) {
+                        setUser(DEMO_DATA.user);
+                        setIsAuthenticated(true);
+                    } else {
+                        fetchUser();
+                    }
+                }
+            }, [token, isDemoMode]);
+
+            const checkConnection = async () => {
+                if (isDemoMode) {
+                    setConnectionStatus('demo');
+                    return;
+                }
+
+                try {
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), 3000);
+                    
+                    const response = await fetch(`${API_URL}/health`, {
+                        signal: controller.signal
+                    });
+                    clearTimeout(timeoutId);
+                    
+                    setConnectionStatus(response.ok ? 'connected' : 'error');
+                } catch (error) {
+                    setConnectionStatus('offline');
+                }
+            };
+
+            const fetchUser = async () => {
+                try {
+                    const response = await fetch(`${API_URL}/auth/me`, {
+                        headers: { 'Authorization': `Bearer ${token}` }
+                    });
+                    if (response.ok) {
+                        const data = await response.json();
+                        setUser(data.user);
+                        setIsAuthenticated(true);
+                    } else {
+                        logout();
+                    }
+                } catch (error) {
+                    console.error('Error fetching user:', error);
+                    logout();
+                }
+            };
+
+            const login = (newToken, userData) => {
+                localStorage.setItem('token', newToken);
+                setToken(newToken);
+                setUser(userData);
+                setIsAuthenticated(true);
+            };
+
+            const logout = () => {
+                localStorage.removeItem('token');
+                setToken(null);
+                setUser(null);
+                setIsAuthenticated(false);
+            };
+
+            const enableDemoMode = () => {
+                localStorage.setItem(DEMO_MODE_KEY, 'true');
+                setIsDemoMode(true);
+                login(DEMO_DATA.token, DEMO_DATA.user);
+                setConnectionStatus('demo');
+            };
+
+            const disableDemoMode = () => {
+                localStorage.removeItem(DEMO_MODE_KEY);
+                setIsDemoMode(false);
+                logout();
+                checkConnection();
+            };
+
+            if (!isAuthenticated) {
+                return <AuthScreen 
+                    onLogin={login} 
+                    connectionStatus={connectionStatus}
+                    onEnableDemoMode={enableDemoMode}
+                    isDemoMode={isDemoMode}
+                />;
+            }
+
+            return (
+                <div className="min-h-screen">
+                    {/* Connection Status Banner */}
+                    {connectionStatus !== 'connected' && (
+                        <div className={`${connectionStatus === 'demo' ? 'bg-blue-600' : 'bg-yellow-600'} text-white px-4 py-2 text-center text-sm`}>
+                            {connectionStatus === 'demo' && '🎮 Demo Mode - Using sample data'}
+                            {connectionStatus === 'offline' && '⚠️ Backend offline - Using demo mode'}
+                            {connectionStatus === 'error' && '⚠️ Connection error - Using demo mode'}
+                            {isDemoMode && (
+                                <button 
+                                    onClick={disableDemoMode}
+                                    className="ml-4 underline hover:text-gray-200"
+                                >
+                                    Exit Demo Mode
+                                </button>
+                            )}
+                        </div>
+                    )}
+
+                    <nav className="bg-white shadow-sm">
+                        <div className="max-w-7xl mx-auto px-4 py-4">
+                            <div className="flex justify-between items-center">
+                                <div className="flex items-center space-x-8">
+                                    <h1 className="text-2xl font-bold text-blue-600">
+                                        🥇 ZeroTouch Mail AI
+                                    </h1>
+                                    <div className="space-x-4">
+                                        <button
+                                            onClick={() => setCurrentView('dashboard')}
+                                            className={`px-3 py-2 rounded ${currentView === 'dashboard' ? 'bg-blue-100 text-blue-700' : 'text-gray-600 hover:bg-gray-100'}`}
+                                        >
+                                            Dashboard
+                                        </button>
+                                        <button
+                                            onClick={() => setCurrentView('leads')}
+                                            className={`px-3 py-2 rounded ${currentView === 'leads' ? 'bg-blue-100 text-blue-700' : 'text-gray-600 hover:bg-gray-100'}`}
+                                        >
+                                            Leads
+                                        </button>
+                                        <button
+                                            onClick={() => setCurrentView('sequences')}
+                                            className={`px-3 py-2 rounded ${currentView === 'sequences' ? 'bg-blue-100 text-blue-700' : 'text-gray-600 hover:bg-gray-100'}`}
+                                        >
+                                            Sequences
+                                        </button>
+                                        <button
+                                            onClick={() => setCurrentView('emails')}
+                                            className={`px-3 py-2 rounded ${currentView === 'emails' ? 'bg-blue-100 text-blue-700' : 'text-gray-600 hover:bg-gray-100'}`}
+                                        >
+                                            Emails
+                                        </button>
+                                    </div>
+                                </div>
+                                <div className="flex items-center space-x-4">
+                                    <span className="text-sm text-gray-600">{user?.email}</span>
+                                    <button
+                                        onClick={logout}
+                                        className="px-4 py-2 text-sm text-red-600 hover:bg-red-50 rounded"
+                                    >
+                                        Logout
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </nav>
+
+                    <main className="max-w-7xl mx-auto px-4 py-8">
+                        {currentView === 'dashboard' && <Dashboard token={token} isDemoMode={isDemoMode} />}
+                        {currentView === 'leads' && <LeadsView token={token} isDemoMode={isDemoMode} />}
+                        {currentView === 'sequences' && <SequencesView token={token} isDemoMode={isDemoMode} />}
+                        {currentView === 'emails' && <EmailsView token={token} />}
+                    </main>
+                </div>
+            );
+        }
+
+        // Auth Screen
+        function AuthScreen({ onLogin, connectionStatus, onEnableDemoMode, isDemoMode }) {
+            const [isLogin, setIsLogin] = useState(true);
+            const [email, setEmail] = useState('');
+            const [password, setPassword] = useState('');
+            const [companyName, setCompanyName] = useState('');
+            const [error, setError] = useState('');
+            const [loading, setLoading] = useState(false);
+
+            const handleSubmit = async (e) => {
+                e.preventDefault();
+                
+                // If offline, show error and suggest demo mode
+                if (connectionStatus === 'offline' || connectionStatus === 'error') {
+                    setError('Cannot connect to backend server. Click "Try Demo Mode" below.');
+                    return;
+                }
+
+                setError('');
+                setLoading(true);
+
+                try {
+                    const endpoint = isLogin ? '/auth/login' : '/auth/register';
+                    const body = isLogin 
+                        ? { email, password }
+                        : { email, password, company_name: companyName };
+
+                    const response = await fetch(`${API_URL}${endpoint}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(body)
+                    });
+
+                    const data = await response.json();
+
+                    if (response.ok) {
+                        onLogin(data.token, data.user);
+                    } else {
+                        setError(data.error || 'Authentication failed');
+                    }
+                } catch (error) {
+                    setError('Network error. Backend server is not running.');
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            return (
+                <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100">
+                    <div className="bg-white p-8 rounded-lg shadow-lg w-96">
+                        <div className="text-center mb-6">
+                            <h1 className="text-3xl font-bold text-blue-600 mb-2">
+                                🥇 ZeroTouch Mail AI
+                            </h1>
+                            <p className="text-gray-600">
+                                {isLogin ? 'Welcome back!' : 'Create your account'}
+                            </p>
+                        </div>
+
+                        {/* Connection Status */}
+                        {connectionStatus !== 'connected' && connectionStatus !== 'checking' && (
+                            <div className="mb-4 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
+                                <p className="text-sm text-yellow-800 mb-2">
+                                    ⚠️ Backend server is offline
+                                </p>
+                                <button
+                                    onClick={onEnableDemoMode}
+                                    className="w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium"
+                                >
+                                    Try Demo Mode
+                                </button>
+                            </div>
+                        )}
+
+                        <form onSubmit={handleSubmit} className="space-y-4">
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">
+                                    Email
+                                </label>
+                                <input
+                                    type="email"
+                                    value={email}
+                                    onChange={(e) => setEmail(e.target.value)}
+                                    required
+                                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                    placeholder="you@company.com"
+                                />
+                            </div>
+
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">
+                                    Password
+                                </label>
+                                <input
+                                    type="password"
+                                    value={password}
+                                    onChange={(e) => setPassword(e.target.value)}
+                                    required
+                                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                    placeholder="••••••••"
+                                />
+                            </div>
+
+                            {!isLogin && (
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                                        Company Name
+                                    </label>
+                                    <input
+                                        type="text"
+                                        value={companyName}
+                                        onChange={(e) => setCompanyName(e.target.value)}
+                                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                        placeholder="Acme Inc"
+                                    />
+                                </div>
+                            )}
+
+                            {error && (
+                                <div className="bg-red-50 text-red-600 px-3 py-2 rounded text-sm">
+                                    {error}
+                                </div>
+                            )}
+
+                            <button
+                                type="submit"
+                                disabled={loading || connectionStatus === 'offline'}
+                                className="w-full bg-blue-600 text-white py-2 rounded-lg hover:bg-blue-700 disabled:opacity-50 font-medium"
+                            >
+                                {loading ? 'Please wait...' : (isLogin ? 'Login' : 'Sign Up')}
+                            </button>
+                        </form>
+
+                        <div className="mt-4 text-center">
+                            <button
+                                onClick={() => setIsLogin(!isLogin)}
+                                className="text-sm text-blue-600 hover:text-blue-700"
+                            >
+                                {isLogin ? "Don't have an account? Sign up" : 'Already have an account? Login'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        // Dashboard Component
+        function Dashboard({ token, isDemoMode }) {
+            const [analytics, setAnalytics] = useState(null);
+            const [loading, setLoading] = useState(true);
+            const [dateRange, setDateRange] = useState('30'); // days
+
+            useEffect(() => {
+                fetchAnalytics();
+            }, [dateRange]);
+
+            const fetchAnalytics = async () => {
+                if (isDemoMode) {
+                    setTimeout(() => {
+                        setAnalytics(DEMO_DATA.analytics);
+                        setLoading(false);
+                    }, 500);
+                    return;
+                }
+
+                try {
+                    const response = await fetch(`${API_URL}/analytics/dashboard?days=${dateRange}`, {
+                        headers: { 'Authorization': `Bearer ${token}` }
+                    });
+                    const data = await response.json();
+                    setAnalytics(data);
+                } catch (error) {
+                    console.error('Error fetching analytics:', error);
+                    setAnalytics(DEMO_DATA.analytics);
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            if (loading) return <div className="text-center py-8">Loading...</div>;
+            if (!analytics) return <div className="text-center py-8">No data available</div>;
+
+            // Calculate recovery metrics
+            const ghostedLeads = analytics.funnel?.dead || 0;
+            const recoveredLeads = analytics.overview.recovered_this_month || 0;
+            const recoveryRate = ghostedLeads > 0 ? Math.round((recoveredLeads / ghostedLeads) * 100) : 0;
+            const avgDealValue = 500; // You can make this dynamic later
+            const recoveredRevenue = recoveredLeads * avgDealValue;
+
+            return (
+                <div className="space-y-6">
+                    <div className="flex justify-between items-center">
+                        <h2 className="text-2xl font-bold text-gray-800">Analytics Dashboard</h2>
+                        <select 
+                            value={dateRange}
+                            onChange={(e) => setDateRange(e.target.value)}
+                            className="px-4 py-2 border border-gray-300 rounded-lg"
+                        >
+                            <option value="7">Last 7 Days</option>
+                            <option value="30">Last 30 Days</option>
+                            <option value="90">Last 90 Days</option>
+                        </select>
+                    </div>
+
+                    {/* KPI Cards */}
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                        <KPICard 
+                            title="Total Leads" 
+                            value={analytics.overview.total_leads}
+                            icon="👥"
+                            trend="+12%"
+                        />
+                        <KPICard 
+                            title="Reply Rate" 
+                            value={`${analytics.overview.reply_rate}%`}
+                            icon="📧"
+                            trend="+5%"
+                        />
+                        <KPICard 
+                            title="Recovered This Month" 
+                            value={recoveredLeads}
+                            icon="🔄"
+                            trend="+23%"
+                        />
+                        <KPICard 
+                            title="Recovered Revenue" 
+                            value={`$${recoveredRevenue.toLocaleString()}`}
+                            icon="💰"
+                            trend="+18%"
+                            highlight={true}
+                        />
+                    </div>
+
+                    {/* Recovery Funnel - YOUR DIFFERENTIATOR */}
+                    <div className="bg-gradient-to-br from-blue-50 to-indigo-50 rounded-lg shadow-lg p-6 border-2 border-blue-200">
+                        <div className="flex items-center justify-between mb-4">
+                            <h3 className="text-lg font-semibold text-gray-800">🚀 ZeroTouch Mail AI Funnel</h3>
+                            <span className="text-sm bg-blue-600 text-white px-3 py-1 rounded-full">
+                                Your Superpower
+                            </span>
+                        </div>
+                        
+                        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+                            <div className="bg-white p-4 rounded-lg text-center">
+                                <div className="text-3xl mb-2">😴</div>
+                                <div className="text-2xl font-bold text-gray-800">{ghostedLeads}</div>
+                                <div className="text-sm text-gray-600">Ghosted Leads</div>
+                            </div>
+                            <div className="flex items-center justify-center">
+                                <div className="text-3xl">→</div>
+                            </div>
+                            <div className="bg-white p-4 rounded-lg text-center">
+                                <div className="text-3xl mb-2">🤖</div>
+                                <div className="text-2xl font-bold text-green-600">{recoveredLeads}</div>
+                                <div className="text-sm text-gray-600">AI Re-engaged</div>
+                            </div>
+                            <div className="flex items-center justify-center">
+                                <div className="text-3xl">→</div>
+                            </div>
+                        </div>
+
+                        <div className="bg-white rounded-lg p-4">
+                            <div className="flex justify-between items-center mb-2">
+                                <span className="text-sm font-medium text-gray-700">Recovery Rate</span>
+                                <span className="text-lg font-bold text-blue-600">{recoveryRate}%</span>
+                            </div>
+                            <div className="w-full bg-gray-200 rounded-full h-3">
+                                <div 
+                                    className="bg-gradient-to-r from-blue-500 to-green-500 h-3 rounded-full transition-all duration-500"
+                                    style={{width: `${recoveryRate}%`}}
+                                ></div>
+                            </div>
+                            <div className="mt-3 p-3 bg-green-50 rounded text-center">
+                                <p className="text-lg font-bold text-green-700">
+                                    💰 ${recoveredRevenue.toLocaleString()} recovered from cold leads!
+                                </p>
+                                <p className="text-xs text-green-600 mt-1">
+                                    That's revenue you would have lost without AI
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Lead Status Distribution with Visual Chart */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div className="bg-white rounded-lg shadow p-6">
+                            <h3 className="text-lg font-semibold mb-4">Lead Pipeline</h3>
+                            <div className="space-y-3">
+                                {Object.entries(analytics.funnel || {}).map(([status, count]) => {
+                                    const total = Object.values(analytics.funnel || {}).reduce((a, b) => a + b, 0);
+                                    const percentage = total > 0 ? Math.round((count / total) * 100) : 0;
+                                    const colors = {
+                                        new: 'bg-blue-500',
+                                        active: 'bg-green-500',
+                                        analyzed: 'bg-indigo-500',
+                                        replied: 'bg-purple-500',
+                                        interested: 'bg-red-500',
+                                        dead: 'bg-gray-400'
+                                    };
+                                    
+                                    return (
+                                        <div key={status}>
+                                            <div className="flex justify-between items-center mb-1">
+                                                <span className="text-sm font-medium capitalize text-gray-700">{status}</span>
+                                                <span className="text-sm font-bold text-gray-800">{count} ({percentage}%)</span>
+                                            </div>
+                                            <div className="w-full bg-gray-200 rounded-full h-2">
+                                                <div 
+                                                    className={`${colors[status]} h-2 rounded-full transition-all duration-500`}
+                                                    style={{width: `${percentage}%`}}
+                                                ></div>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+
+                        {/* AI Intent Distribution */}
+                        <div className="bg-white rounded-lg shadow p-6">
+                            <h3 className="text-lg font-semibold mb-4">AI Intent Analysis</h3>
+                            <div className="space-y-4">
+                                <div className="flex items-center justify-between p-3 bg-red-50 rounded">
+                                    <div className="flex items-center">
+                                        <span className="text-2xl mr-3">🔥</span>
+                                        <div>
+                                            <div className="font-medium">Interested</div>
+                                            <div className="text-xs text-gray-600">Ready to buy</div>
+                                        </div>
+                                    </div>
+                                    <div className="text-2xl font-bold text-red-600">
+                                        {analytics.hot_leads?.length || 0}
+                                    </div>
+                                </div>
+                                <div className="flex items-center justify-between p-3 bg-yellow-50 rounded">
+                                    <div className="flex items-center">
+                                        <span className="text-2xl mr-3">⏰</span>
+                                        <div>
+                                            <div className="font-medium">Not Now</div>
+                                            <div className="text-xs text-gray-600">Follow up later</div>
+                                        </div>
+                                    </div>
+                                    <div className="text-2xl font-bold text-yellow-600">{analytics.intent_counts?.NOT_NOW ?? 0}</div>
+                                </div>
+                                <div className="flex items-center justify-between p-3 bg-gray-50 rounded">
+                                    <div className="flex items-center">
+                                        <span className="text-2xl mr-3">👻</span>
+                                        <div>
+                                            <div className="font-medium">Ghosting</div>
+                                            <div className="text-xs text-gray-600">Need AI recovery</div>
+                                        </div>
+                                    </div>
+                                    <div className="text-2xl font-bold text-gray-600">{ghostedLeads}</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Hot Leads */}
+                    {analytics.hot_leads && analytics.hot_leads.length > 0 && (
+                        <div className="bg-white rounded-lg shadow p-6">
+                            <h3 className="text-lg font-semibold mb-4">🔥 Hot Leads - Take Action Now!</h3>
+                            <div className="space-y-3">
+                                {analytics.hot_leads.map(lead => (
+                                    <div key={lead.id} className="flex items-center justify-between p-4 bg-gradient-to-r from-red-50 to-orange-50 rounded-lg border-l-4 border-red-500">
+                                        <div>
+                                            <p className="font-medium text-gray-900">{lead.first_name} {lead.last_name}</p>
+                                            <p className="text-sm text-gray-600">{lead.company}</p>
+                                        </div>
+                                        <div className="flex items-center space-x-3">
+                                            <span className="text-sm bg-red-100 text-red-700 px-3 py-1 rounded-full font-medium">
+                                                Interested!
+                                            </span>
+                                            <button className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium">
+                                                Contact Now
+                                            </button>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Quick Stats */}
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <div className="bg-white rounded-lg shadow p-4">
+                                    <div className="text-sm text-gray-600 mb-1">Avg. Time to Reply</div>
+                            <div className="text-2xl font-bold text-gray-800">{analytics.overview?.avg_time_to_reply_hours != null ? analytics.overview.avg_time_to_reply_hours + 'h' : '—'}</div>
+                            <div className="text-xs text-gray-600 mt-1">{analytics.overview?.avg_time_to_reply_hours != null ? 'Time from their reply to your send' : 'Send replies to see'}</div>
+                        </div>
+                        <div className="bg-white rounded-lg shadow p-4">
+                            <div className="text-sm text-gray-600 mb-1">Active Sequences</div>
+                            <div className="text-2xl font-bold text-gray-800">{analytics.overview.active_sequences}</div>
+                            <div className="text-xs text-blue-600 mt-1">All running smoothly</div>
+                        </div>
+                        <div className="bg-white rounded-lg shadow p-4">
+                            <div className="text-sm text-gray-600 mb-1">Recovery Success Rate</div>
+                            <div className="text-2xl font-bold text-gray-800">{recoveryRate}%</div>
+                            <div className="text-xs text-green-600 mt-1">Above average!</div>
+                        </div>
+                    </div>
+
+                    {/* Reply Rate Trend Chart */}
+                    <div className="bg-white rounded-lg shadow p-6">
+                        <div className="flex justify-between items-center mb-4">
+                            <h3 className="text-lg font-semibold">📈 Reply Rate Trend</h3>
+                            <button 
+                                onClick={() => exportAnalytics(analytics)}
+                                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm flex items-center"
+                            >
+                                <span className="mr-2">📊</span>
+                                Export CSV
+                            </button>
+                        </div>
+                        <div className="h-64 flex items-end justify-between space-x-2">
+                            {[
+                                { day: 'Mon', rate: 18 },
+                                { day: 'Tue', rate: 22 },
+                                { day: 'Wed', rate: 25 },
+                                { day: 'Thu', rate: 23 },
+                                { day: 'Fri', rate: 28 },
+                                { day: 'Sat', rate: 20 },
+                                { day: 'Sun', rate: 23 }
+                            ].map((data, index) => (
+                                <div key={index} className="flex-1 flex flex-col items-center">
+                                    <div className="w-full bg-gradient-to-t from-blue-500 to-blue-300 rounded-t hover:from-blue-600 hover:to-blue-400 transition-all cursor-pointer relative group" 
+                                         style={{height: `${(data.rate / 30) * 100}%`}}>
+                                        <div className="absolute -top-6 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity">
+                                            {data.rate}%
+                                        </div>
+                                    </div>
+                                    <div className="text-xs text-gray-600 mt-2">{data.day}</div>
+                                </div>
+                            ))}
+                        </div>
+                        <div className="mt-4 text-center text-sm text-gray-600">
+                            Average: 23% reply rate <span className="text-green-600 font-medium">(Above industry avg of 15-20%)</span>
+                        </div>
+                    </div>
+
+                    {/* Campaign Performance Table */}
+                    {analytics.campaigns && (
+                        <div className="bg-white rounded-lg shadow overflow-hidden">
+                            <div className="p-6 border-b flex justify-between items-center">
+                                <h3 className="text-lg font-semibold">Campaign Performance</h3>
+                                <span className="text-sm text-gray-600">Track opens, clicks, and replies per campaign</span>
+                            </div>
+                            <div className="overflow-x-auto">
+                                <table className="min-w-full">
+                                    <thead className="bg-gray-50">
+                                        <tr>
+                                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Campaign</th>
+                                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Sent</th>
+                                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Opens</th>
+                                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Clicks</th>
+                                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Replies</th>
+                                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Performance</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-gray-200">
+                                        {analytics.campaigns.map(campaign => {
+                                            const openRate = Math.round((campaign.opens / campaign.sent) * 100);
+                                            const clickRate = Math.round((campaign.clicks / campaign.sent) * 100);
+                                            const replyRate = Math.round((campaign.replies / campaign.sent) * 100);
+                                            
+                                            return (
+                                                <tr key={campaign.id} className="hover:bg-gray-50">
+                                                    <td className="px-6 py-4 font-medium text-gray-900">{campaign.name}</td>
+                                                    <td className="px-6 py-4 text-gray-600">{campaign.sent}</td>
+                                                    <td className="px-6 py-4">
+                                                        <div>{campaign.opens}</div>
+                                                        <div className="text-xs text-gray-500">{openRate}%</div>
+                                                    </td>
+                                                    <td className="px-6 py-4">
+                                                        <div>{campaign.clicks}</div>
+                                                        <div className="text-xs text-gray-500">{clickRate}%</div>
+                                                    </td>
+                                                    <td className="px-6 py-4">
+                                                        <div>{campaign.replies}</div>
+                                                        <div className="text-xs text-gray-500">{replyRate}%</div>
+                                                    </td>
+                                                    <td className="px-6 py-4">
+                                                        <div className="flex flex-wrap gap-1">
+                                                            <span className={`text-xs px-2 py-1 rounded ${openRate >= 20 ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}`}>
+                                                                {openRate >= 20 ? '✓' : '!'} Open
+                                                            </span>
+                                                            <span className={`text-xs px-2 py-1 rounded ${replyRate >= 5 ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}`}>
+                                                                {replyRate >= 5 ? '✓' : '!'} Reply
+                                                            </span>
+                                                        </div>
+                                                    </td>
+                                                </tr>
+                                            );
+                                        })}
+                                    </tbody>
+                                </table>
+                            </div>
+                            <div className="px-6 py-4 bg-gray-50 text-sm text-gray-600 border-t">
+                                <strong>📊 Benchmarks:</strong> Open rate 15-25% • Click rate 2-5% • Reply rate 1-5%
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Sequence Step Analytics */}
+                    {analytics.sequences && (
+                        <div className="bg-white rounded-lg shadow p-6">
+                            <h3 className="text-lg font-semibold mb-4">Sequence Step Performance</h3>
+                            <p className="text-sm text-gray-600 mb-4">See how each email in your sequence performs</p>
+                            <div className="space-y-4">
+                                {analytics.sequences.map(step => {
+                                    const openRate = Math.round((step.opens / step.sent) * 100);
+                                    const clickRate = Math.round((step.clicks / step.sent) * 100);
+                                    const replyRate = Math.round((step.replies / step.sent) * 100);
+                                    
+                                    return (
+                                        <div key={step.step} className="border rounded-lg p-4 hover:border-blue-300 transition">
+                                            <div className="flex justify-between items-center mb-3">
+                                                <div>
+                                                    <span className="font-medium">Step {step.step}:</span>
+                                                    <span className="ml-2 text-gray-600">{step.name}</span>
+                                                </div>
+                                                <span className="text-sm text-gray-500">{step.sent} sent</span>
+                                            </div>
+                                            <div className="grid grid-cols-3 gap-4">
+                                                <div>
+                                                    <div className="text-xs text-gray-600 mb-1">Open Rate</div>
+                                                    <div className="flex items-center">
+                                                        <div className="flex-1 bg-gray-200 rounded-full h-2 mr-2">
+                                                            <div className="bg-blue-500 h-2 rounded-full" style={{width: `${openRate}%`}}></div>
+                                                        </div>
+                                                        <span className="text-sm font-medium">{openRate}%</span>
+                                                    </div>
+                                                </div>
+                                                <div>
+                                                    <div className="text-xs text-gray-600 mb-1">Click Rate</div>
+                                                    <div className="flex items-center">
+                                                        <div className="flex-1 bg-gray-200 rounded-full h-2 mr-2">
+                                                            <div className="bg-purple-500 h-2 rounded-full" style={{width: `${clickRate}%`}}></div>
+                                                        </div>
+                                                        <span className="text-sm font-medium">{clickRate}%</span>
+                                                    </div>
+                                                </div>
+                                                <div>
+                                                    <div className="text-xs text-gray-600 mb-1">Reply Rate</div>
+                                                    <div className="flex items-center">
+                                                        <div className="flex-1 bg-gray-200 rounded-full h-2 mr-2">
+                                                            <div className="bg-green-500 h-2 rounded-full" style={{width: `${replyRate}%`}}></div>
+                                                        </div>
+                                                        <span className="text-sm font-medium">{replyRate}%</span>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Lead Source Analytics */}
+                    {analytics.lead_sources && (
+                        <div className="bg-white rounded-lg shadow p-6">
+                            <h3 className="text-lg font-semibold mb-4">Lead Source ROI</h3>
+                            <div className="space-y-3">
+                                {analytics.lead_sources.map((source, idx) => {
+                                    const convRate = Math.round((source.conversions / source.leads) * 100);
+                                    const costPerConv = source.cost / source.conversions;
+                                    
+                                    return (
+                                        <div key={idx} className="flex items-center justify-between p-4 border rounded hover:border-blue-300">
+                                            <div>
+                                                <div className="font-medium">{source.source}</div>
+                                                <div className="text-sm text-gray-600">{source.leads} leads • {convRate}% conversion</div>
+                                            </div>
+                                            <div className="text-right">
+                                                <div className="font-bold text-blue-600">${costPerConv.toFixed(2)}/conv</div>
+                                                <div className="text-xs text-gray-500">Total: ${source.cost}</div>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        // Export Analytics Function
+        function exportAnalytics(analytics) {
+            const csvData = [
+                ['Metric', 'Value'],
+                ['Total Leads', analytics.overview.total_leads],
+                ['Reply Rate', `${analytics.overview.reply_rate}%`],
+                ['Recovered This Month', analytics.overview.recovered_this_month],
+                ['Active Sequences', analytics.overview.active_sequences],
+                ['', ''],
+                ['Lead Status', 'Count'],
+                ...Object.entries(analytics.funnel || {}).map(([status, count]) => [status, count])
+            ];
+
+            const csvContent = csvData.map(row => row.join(',')).join('\n');
+            const blob = new Blob([csvContent], { type: 'text/csv' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `analytics-${new Date().toISOString().split('T')[0]}.csv`;
+            a.click();
+        }
+
+        function KPICard({ title, value, icon, trend, highlight }) {
+            return (
+                <div className={`${highlight ? 'bg-gradient-to-br from-green-50 to-emerald-50 border-2 border-green-300' : 'bg-white'} rounded-lg shadow p-6`}>
+                    <div className="flex items-center justify-between">
+                        <div>
+                            <p className="text-sm text-gray-600">{title}</p>
+                            <p className="text-3xl font-bold mt-2">{value}</p>
+                            {trend && (
+                                <p className="text-xs text-green-600 mt-1 font-medium">{trend}</p>
+                            )}
+                        </div>
+                        <div className="text-4xl">{icon}</div>
+                    </div>
+                </div>
+            );
+        }
+
+        function SendDraftButton({ draftId, token, onSent }) {
+            const [draft, setDraft] = useState(null);
+            const [body, setBody] = useState('');
+            const [sending, setSending] = useState(false);
+            const [rejecting, setRejecting] = useState(false);
+            useEffect(() => {
+                fetch(`${API_URL}/drafts`, { headers: { 'Authorization': `Bearer ${token}` } })
+                    .then(r => r.json())
+                    .then(data => {
+                        const list = data.drafts || [];
+                        const d = list.find(x => x.id === draftId);
+                        if (d) { setDraft(d); setBody(d.draft_body || ''); }
+                    });
+            }, [draftId, token]);
+            const send = async () => {
+                setSending(true);
+                try {
+                    const r = await fetch(`${API_URL}/drafts/${draftId}/send`, {
+                        method: 'POST',
+                        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ edited_body: body })
+                    });
+                    if (r.ok) onSent();
+                } finally {
+                    setSending(false);
+                }
+            };
+            const skip = async () => {
+                setRejecting(true);
+                try {
+                    const r = await fetch(`${API_URL}/drafts/${draftId}/reject`, {
+                        method: 'POST',
+                        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
+                    });
+                    if (r.ok) onSent();
+                } finally {
+                    setRejecting(false);
+                }
+            };
+            if (!draft) return <div className="text-sm text-gray-500">Loading draft...</div>;
+            return (
+                <div className="p-4 bg-green-50 rounded-lg border border-green-200">
+                    <div className="text-sm font-medium text-gray-700 mb-2">✉️ AI draft – edit if needed, then send</div>
+                    <textarea value={body} onChange={e => setBody(e.target.value)} className="w-full px-3 py-2 border rounded-lg text-sm min-h-[80px]" />
+                    <div className="mt-2 flex gap-2">
+                        <button onClick={send} disabled={sending} className="flex-1 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50">{sending ? 'Sending...' : 'Send reply'}</button>
+                        <button onClick={skip} disabled={rejecting} className="px-4 py-2 bg-gray-400 text-white rounded-lg hover:bg-gray-500 disabled:opacity-50">{rejecting ? 'Skipping...' : 'Skip'}</button>
+                    </div>
+                </div>
+            );
+        }
+
+        // Emails View — shows drafts needing attention
+        function EmailsView({ token }) {
+            const [drafts, setDrafts] = useState([]);
+            const [loading, setLoading] = useState(true);
+            const [editingId, setEditingId] = useState(null);
+            const [editBody, setEditBody] = useState('');
+            const [sending, setSending] = useState(false);
+
+            const fetchDrafts = async () => {
+                try {
+                    const r = await fetch(`${API_URL}/drafts`, { headers: { 'Authorization': `Bearer ${token}` } });
+                    const data = await r.json();
+                    setDrafts(data.drafts || []);
+                } catch (e) {
+                    console.error('Error fetching drafts:', e);
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            useEffect(() => { fetchDrafts(); const interval = setInterval(fetchDrafts, 15000); return () => clearInterval(interval); }, []);
+
+            const sendDraft = async (id, body) => {
+                setSending(true);
+                try {
+                    const r = await fetch(`${API_URL}/drafts/${id}/send`, {
+                        method: 'POST',
+                        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ edited_body: body })
+                    });
+                    if (r.ok) {
+                        setDrafts(prev => prev.filter(d => d.id !== id));
+                        setEditingId(null);
+                        setEditBody('');
+                    }
+                } finally { setSending(false); }
+            };
+
+            const rejectDraft = async (id) => {
+                try {
+                    const r = await fetch(`${API_URL}/drafts/${id}/reject`, {
+                        method: 'POST',
+                        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
+                    });
+                    if (r.ok) setDrafts(prev => prev.filter(d => d.id !== id));
+                } catch (e) { console.error(e); }
+            };
+
+            if (loading) return <div className="text-center py-8 text-gray-500">Loading...</div>;
+
+            return (
+                <div className="space-y-4">
+                    <h2 className="text-xl font-bold text-gray-800">Emails</h2>
+
+                    <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+                        <p className="text-sm text-blue-800">
+                            <strong>📧 Auto Mode:</strong> AI handles all replies automatically. Emails only appear here when the AI couldn't answer a customer's question and needs your help.
+                        </p>
+                    </div>
+
+                    {drafts.length === 0 ? (
+                        <div className="bg-white border rounded-lg p-8 text-center">
+                            <p className="text-gray-500 text-lg mb-1">All clear!</p>
+                            <p className="text-gray-400 text-sm">No emails need your attention. AI is handling everything.</p>
+                        </div>
+                    ) : (
+                        drafts.map(draft => (
+                            <div key={draft.id} className="bg-white border rounded-lg p-4 shadow-sm">
+                                <div className="flex items-start justify-between">
+                                    <div className="flex-1">
+                                        <div className="flex items-center gap-2 mb-1">
+                                            <span className="font-semibold text-gray-800">{draft.lead_name}</span>
+                                            <span className="text-xs px-2 py-0.5 bg-yellow-100 text-yellow-800 rounded font-medium">{draft.ai_intent}</span>
+                                            {draft.needs_follow_up && (
+                                                <span className="text-xs px-2 py-0.5 bg-orange-100 text-orange-700 rounded font-medium animate-pulse">Needs Your Reply</span>
+                                            )}
+                                        </div>
+                                        <p className="text-sm text-gray-500">{draft.lead_email}</p>
+                                    </div>
+                                    <span className="text-xs text-gray-400">{new Date(draft.created_at).toLocaleString()}</span>
+                                </div>
+
+                                {draft.reply_text && (
+                                    <div className="mt-3 bg-orange-50 border border-orange-200 rounded p-3">
+                                        <p className="text-xs font-semibold text-orange-700 mb-1">Customer asked:</p>
+                                        <p className="text-sm text-orange-900">"{draft.reply_text.substring(0, 300)}{draft.reply_text.length > 300 ? '...' : ''}"</p>
+                                        <p className="text-xs text-orange-600 mt-2">AI sent a holding reply. Write the real answer below and click Send.</p>
+                                    </div>
+                                )}
+
+                                {editingId !== draft.id ? (
+                                    <div className="mt-3">
+                                        <div className="bg-gray-50 border rounded p-2 text-sm text-gray-600 italic">
+                                            {(draft.draft_body || '').substring(0, 150)}{(draft.draft_body || '').length > 150 ? '...' : ''}
+                                        </div>
+                                        <div className="mt-2 flex gap-2">
+                                            <button
+                                                onClick={() => { setEditingId(draft.id); setEditBody(draft.draft_body || ''); }}
+                                                className="px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 text-sm font-medium"
+                                            >
+                                                Write Reply
+                                            </button>
+                                            <button
+                                                onClick={() => rejectDraft(draft.id)}
+                                                className="px-4 py-2 bg-gray-300 text-gray-700 rounded-lg hover:bg-gray-400 text-sm"
+                                            >
+                                                Dismiss
+                                            </button>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <div className="mt-3">
+                                        <textarea
+                                            value={editBody}
+                                            onChange={e => setEditBody(e.target.value)}
+                                            className="w-full px-3 py-2 border rounded-lg text-sm min-h-[120px] focus:ring-2 focus:ring-orange-500 focus:border-orange-500"
+                                            placeholder="Write your reply here..."
+                                        />
+                                        <div className="mt-2 flex gap-2">
+                                            <button
+                                                onClick={() => sendDraft(draft.id, editBody)}
+                                                disabled={sending || !editBody.trim()}
+                                                className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 text-sm font-medium"
+                                            >
+                                                {sending ? 'Sending...' : 'Send Reply'}
+                                            </button>
+                                            <button
+                                                onClick={() => { setEditingId(null); setEditBody(''); }}
+                                                className="px-4 py-2 bg-gray-300 text-gray-700 rounded-lg hover:bg-gray-400 text-sm"
+                                            >
+                                                Cancel
+                                            </button>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        ))
+                    )}
+                </div>
+            );
+        }
+
+        // Leads View Component
+        function LeadsView({ token, isDemoMode }) {
+            const [leads, setLeads] = useState([]);
+            const [showAddForm, setShowAddForm] = useState(false);
+            const [showBulkImport, setShowBulkImport] = useState(false);
+            const [showAIAnalysis, setShowAIAnalysis] = useState(false);
+            const [selectedLead, setSelectedLead] = useState(null);
+            const [replyText, setReplyText] = useState('');
+            const [aiResult, setAiResult] = useState(null);
+            const [analyzing, setAnalyzing] = useState(false);
+            const [loading, setLoading] = useState(true);
+
+            useEffect(() => {
+                fetchLeads();
+            }, []);
+
+            const fetchLeads = async () => {
+                if (isDemoMode) {
+                    setTimeout(() => {
+                        setLeads(DEMO_DATA.leads);
+                        setLoading(false);
+                    }, 500);
+                    return;
+                }
+
+                try {
+                    const response = await fetch(`${API_URL}/leads`, {
+                        headers: { 'Authorization': `Bearer ${token}` }
+                    });
+                    const data = await response.json();
+                    setLeads(data.leads);
+                } catch (error) {
+                    console.error('Error fetching leads:', error);
+                    setLeads(DEMO_DATA.leads);
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            const addLead = async (leadData) => {
+                if (isDemoMode) {
+                    const newLead = {
+                        id: leads.length + 1,
+                        ...leadData,
+                        status: 'new',
+                        ai_intent: null
+                    };
+                    setLeads([...leads, newLead]);
+                    setShowAddForm(false);
+                    return;
+                }
+
+                try {
+                    const response = await fetch(`${API_URL}/leads`, {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${token}`,
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify(leadData)
+                    });
+                    
+                    if (response.ok) {
+                        fetchLeads();
+                        setShowAddForm(false);
+                    }
+                } catch (error) {
+                    console.error('Error adding lead:', error);
+                }
+            };
+
+            const bulkImportLeads = async (leadsArray) => {
+                if (isDemoMode) {
+                    const newLeads = leadsArray.map((lead, index) => ({
+                        id: leads.length + index + 1,
+                        ...lead,
+                        status: 'new',
+                        ai_intent: null
+                    }));
+                    setLeads([...leads, ...newLeads]);
+                    setShowBulkImport(false);
+                    return { success: newLeads.length, failed: 0 };
+                }
+
+                try {
+                    const response = await fetch(`${API_URL}/leads/bulk`, {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${token}`,
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({ leads: leadsArray })
+                    });
+                    
+                    const data = await response.json();
+                    if (response.ok) {
+                        fetchLeads();
+                        setShowBulkImport(false);
+                        return data;
+                    }
+                    return { success: 0, failed: leadsArray.length };
+                } catch (error) {
+                    console.error('Error bulk importing:', error);
+                    return { success: 0, failed: leadsArray.length };
+                }
+            };
+
+            const analyzeReply = async () => {
+                if (!replyText.trim()) return;
+                
+                setAnalyzing(true);
+                setAiResult(null);
+                
+                if (isDemoMode) {
+                    // Demo mode simulation
+                    setTimeout(() => {
+                        const demoIntents = ['INTERESTED', 'NOT_NOW', 'OBJECTION', 'GHOSTING'];
+                        const randomIntent = demoIntents[Math.floor(Math.random() * demoIntents.length)];
+                        
+                        const recommendations = {
+                            'INTERESTED': '🔥 HOT LEAD! Contact them immediately - they want to buy!',
+                            'NOT_NOW': '⏰ Follow up in 2-4 weeks. Set a reminder.',
+                            'OBJECTION': '💡 Send case study or testimonial addressing their concern.',
+                            'GHOSTING': '👻 Try a different approach - change subject line or angle.'
+                        };
+                        
+                        const reasoning = {
+                            'INTERESTED': 'Reply shows positive engagement and buying signals',
+                            'NOT_NOW': 'Lead indicates timing is not right currently',
+                            'OBJECTION': 'Reply raises concerns or questions about the offer',
+                            'GHOSTING': 'Generic or delayed response with low engagement'
+                        };
+                        
+                        setAiResult({
+                            ai_intent: randomIntent,
+                            ai_reasoning: reasoning[randomIntent],
+                            recommendation: recommendations[randomIntent]
+                        });
+                        
+                        // Update lead in demo mode
+                        const updatedLeads = leads.map(l => 
+                            l.id === selectedLead.id 
+                                ? { ...l, ai_intent: randomIntent, status: randomIntent === 'INTERESTED' ? 'interested' : 'analyzed' }
+                                : l
+                        );
+                        setLeads(updatedLeads);
+                        setAnalyzing(false);
+                    }, 1500);
+                    return;
+                }
+                
+                try {
+                    const response = await fetch(`${API_URL}/leads/${selectedLead.id}/analyze-reply`, {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${token}`,
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({ reply_text: replyText })
+                    });
+                    
+                    const data = await response.json();
+                    if (response.ok) {
+                        setAiResult(data);
+                        fetchLeads(); // Refresh leads to show updated status
+                    } else {
+                        setAiResult({ error: data.error || 'Analysis failed' });
+                    }
+                } catch (error) {
+                    console.error('Error analyzing reply:', error);
+                    setAiResult({ error: 'Network or server error' });
+                } finally {
+                    setAnalyzing(false);
+                }
+            };
+
+            return (
+                <div className="space-y-6">
+                    <div className="flex justify-between items-center">
+                        <h2 className="text-2xl font-bold text-gray-800">Leads</h2>
+                        <div className="flex space-x-3">
+                            <button
+                                onClick={() => setShowBulkImport(true)}
+                                className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 flex items-center space-x-2"
+                            >
+                                <span>📊</span>
+                                <span>Import CSV</span>
+                            </button>
+                            <button
+                                onClick={() => setShowAddForm(true)}
+                                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                            >
+                                + Add Lead
+                            </button>
+                        </div>
+                    </div>
+
+                    {showBulkImport && (
+                        <BulkImportForm 
+                            onImport={bulkImportLeads}
+                            onCancel={() => setShowBulkImport(false)}
+                        />
+                    )}
+
+                    {showAddForm && (
+                        <AddLeadForm 
+                            onSubmit={addLead}
+                            onCancel={() => setShowAddForm(false)}
+                        />
+                    )}
+
+                    {loading ? (
+                        <div className="text-center py-8">Loading leads...</div>
+                    ) : leads.length === 0 ? (
+                        <div className="bg-white rounded-lg shadow p-8 text-center">
+                            <p className="text-gray-600 mb-4">No leads yet. Add your first lead!</p>
+                        </div>
+                    ) : (
+                        <div className="bg-white rounded-lg shadow overflow-hidden">
+                            <table className="min-w-full divide-y divide-gray-200">
+                                <thead className="bg-gray-50">
+                                    <tr>
+                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Name</th>
+                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Email</th>
+                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Company</th>
+                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">AI Intent</th>
+                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="bg-white divide-y divide-gray-200">
+                                    {leads.map(lead => (
+                                        <tr key={lead.id} className="hover:bg-gray-50">
+                                            <td className="px-6 py-4 whitespace-nowrap">
+                                                <div className="font-medium text-gray-900">
+                                                    {lead.first_name} {lead.last_name}
+                                                </div>
+                                            </td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
+                                                {lead.email}
+                                            </td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
+                                                {lead.company || '-'}
+                                            </td>
+                                            <td className="px-6 py-4 whitespace-nowrap">
+                                                <StatusBadge status={lead.status} />
+                                            </td>
+                                            <td className="px-6 py-4 whitespace-nowrap">
+                                                {lead.ai_intent ? (
+                                                    <IntentBadge intent={lead.ai_intent} />
+                                                ) : (
+                                                    <span className="text-sm text-gray-400">-</span>
+                                                )}
+                                            </td>
+                                            <td className="px-6 py-4 whitespace-nowrap">
+                                                <button
+                                                    onClick={() => {
+                                                        setSelectedLead(lead);
+                                                        setShowAIAnalysis(true);
+                                                        setReplyText('');
+                                                        setAiResult(null);
+                                                    }}
+                                                    className="text-sm px-3 py-1 bg-purple-600 text-white rounded hover:bg-purple-700"
+                                                >
+                                                    🤖 Analyze Reply
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                    )}
+
+                    {/* AI Reply Analysis Modal */}
+                    {showAIAnalysis && selectedLead && (
+                        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                            <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
+                                <div className="p-6 border-b">
+                                    <div className="flex justify-between items-center">
+                                        <h3 className="text-xl font-bold">🤖 AI Reply Analysis</h3>
+                                        <button
+                                            onClick={() => setShowAIAnalysis(false)}
+                                            className="text-gray-400 hover:text-gray-600 text-2xl"
+                                        >
+                                            ×
+                                        </button>
+                                    </div>
+                                    <p className="text-sm text-gray-600 mt-2">
+                                        Lead: <strong>{selectedLead.first_name} {selectedLead.last_name}</strong> ({selectedLead.email})
+                                    </p>
+                                </div>
+
+                                <div className="p-6 space-y-4">
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700 mb-2">
+                                            <p className="text-xs text-gray-500 mb-2">Connect email in Settings so new replies are analyzed automatically; or paste their reply below.</p>
+                                            Paste the lead's email reply:
+                                        </label>
+                                        <textarea
+                                            value={replyText}
+                                            onChange={(e) => setReplyText(e.target.value)}
+                                            className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                                            rows="6"
+                                            placeholder="Example: Thanks for reaching out! I'm interested in learning more..."
+                                        />
+                                    </div>
+
+                                    <button
+                                        onClick={analyzeReply}
+                                        disabled={!replyText.trim() || analyzing}
+                                        className="w-full px-4 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 font-medium flex items-center justify-center"
+                                    >
+                                        {analyzing ? (
+                                            <>
+                                                <svg className="animate-spin -ml-1 mr-3 h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                                </svg>
+                                                Analyzing...
+                                            </>
+                                        ) : '🔍 Analyze with AI'}
+                                    </button>
+
+                                    {aiResult && (
+                                        <div className="mt-6 space-y-4 animate-fadeIn">
+                                            {aiResult.error ? (
+                                                <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">{aiResult.error}</div>
+                                            ) : (
+                                                <>
+                                            <div className="bg-gradient-to-r from-purple-50 to-blue-50 rounded-lg p-6 border-2 border-purple-200">
+                                                <div className="flex items-center justify-between mb-4">
+                                                    <h4 className="font-bold text-lg">Classification:</h4>
+                                                    <IntentBadge intent={aiResult.ai_intent} />
+                                                </div>
+                                                
+                                                <div className="space-y-3">
+                                                    <div>
+                                                        <div className="text-sm font-medium text-gray-700 mb-1">🧠 Why:</div>
+                                                        <div className="text-sm text-gray-600 bg-white p-3 rounded">{aiResult.ai_reasoning}</div>
+                                                    </div>
+                                                    
+                                                    <div>
+                                                        <div className="text-sm font-medium text-gray-700 mb-1">💡 Next Step:</div>
+                                                        <div className="text-sm font-medium bg-white p-3 rounded border-l-4 border-purple-500">{aiResult.recommendation}</div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            {aiResult.draft_id && (
+                                                <SendDraftButton draftId={aiResult.draft_id} token={token} onSent={() => { fetchLeads(); setShowAIAnalysis(false); }} />
+                                            )}
+                                            <button
+                                                onClick={() => setShowAIAnalysis(false)}
+                                                className="w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                                            >
+                                                Done
+                                            </button>
+                                                </>
+                                            )}
+                                        </div>
+                                    )}
+
+                                    {!aiResult && (
+                                        <div className="p-4 bg-blue-50 rounded-lg">
+                                            <p className="text-sm text-blue-800 font-medium mb-2">💡 Try examples:</p>
+                                            <div className="space-y-2">
+                                                <button onClick={() => setReplyText("Thanks! I'm interested. Can we schedule a call?")} className="block w-full text-left text-xs bg-white p-2 rounded hover:bg-blue-100">Interested reply</button>
+                                                <button onClick={() => setReplyText("Not now, check back in Q3.")} className="block w-full text-left text-xs bg-white p-2 rounded hover:bg-blue-100">Not now reply</button>
+                                                <button onClick={() => setReplyText("Price seems high. Can you send more info?")} className="block w-full text-left text-xs bg-white p-2 rounded hover:bg-blue-100">Objection reply</button>
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        function AddLeadForm({ onSubmit, onCancel }) {
+            const [formData, setFormData] = useState({
+                email: '',
+                first_name: '',
+                last_name: '',
+                company: '',
+                phone: ''
+            });
+
+            const handleSubmit = (e) => {
+                e.preventDefault();
+                onSubmit(formData);
+            };
+
+            return (
+                <div className="bg-white rounded-lg shadow p-6">
+                    <h3 className="text-lg font-semibold mb-4">Add New Lead</h3>
+                    <form onSubmit={handleSubmit} className="space-y-4">
+                        <div className="grid grid-cols-2 gap-4">
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">
+                                    First Name
+                                </label>
+                                <input
+                                    type="text"
+                                    value={formData.first_name}
+                                    onChange={(e) => setFormData({...formData, first_name: e.target.value})}
+                                    className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                                />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">
+                                    Last Name
+                                </label>
+                                <input
+                                    type="text"
+                                    value={formData.last_name}
+                                    onChange={(e) => setFormData({...formData, last_name: e.target.value})}
+                                    className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                                />
+                            </div>
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">
+                                Email *
+                            </label>
+                            <input
+                                type="email"
+                                required
+                                value={formData.email}
+                                onChange={(e) => setFormData({...formData, email: e.target.value})}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                            />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">
+                                Company
+                            </label>
+                            <input
+                                type="text"
+                                value={formData.company}
+                                onChange={(e) => setFormData({...formData, company: e.target.value})}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                            />
+                        </div>
+                        <div className="flex space-x-3">
+                            <button
+                                type="submit"
+                                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                            >
+                                Add Lead
+                            </button>
+                            <button
+                                type="button"
+                                onClick={onCancel}
+                                className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300"
+                            >
+                                Cancel
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            );
+        }
+
+        function BulkImportForm({ onImport, onCancel }) {
+            const [importMethod, setImportMethod] = useState(null); // 'file' or 'paste'
+            const [step, setStep] = useState(1); // 1: Upload, 2: Map Columns, 3: Validate, 4: Import
+            const [file, setFile] = useState(null);
+            const [pastedText, setPastedText] = useState('');
+            const [csvData, setCsvData] = useState([]);
+            const [csvHeaders, setCsvHeaders] = useState([]);
+            const [columnMapping, setColumnMapping] = useState({
+                email: '',
+                first_name: '',
+                last_name: '',
+                company: '',
+                phone: ''
+            });
+            const [validationResults, setValidationResults] = useState(null);
+            const [importing, setImporting] = useState(false);
+            const [result, setResult] = useState(null);
+
+            const handleFileChange = (e) => {
+                const selectedFile = e.target.files[0];
+                if (selectedFile) {
+                    setFile(selectedFile);
+                    const fileName = selectedFile.name.toLowerCase();
+                    
+                    if (fileName.endsWith('.xlsx') || fileName.endsWith('.xls')) {
+                        parseExcel(selectedFile);
+                    } else if (fileName.endsWith('.csv')) {
+                        parseCSV(selectedFile);
+                    } else if (fileName.endsWith('.txt')) {
+                        parseTextFile(selectedFile);
+                    }
+                }
+            };
+
+            const parseExcel = (file) => {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    const data = new Uint8Array(e.target.result);
+                    const workbook = XLSX.read(data, { type: 'array' });
+                    const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+                    const jsonData = XLSX.utils.sheet_to_json(firstSheet);
+                    
+                    if (jsonData.length > 0) {
+                        const headers = Object.keys(jsonData[0]);
+                        setCsvHeaders(headers);
+                        setCsvData(jsonData);
+                        autoDetectColumns(headers);
+                        setStep(2);
+                    }
+                };
+                reader.readAsArrayBuffer(file);
+            };
+
+            const parseCSV = (file) => {
+                Papa.parse(file, {
+                    header: true,
+                    skipEmptyLines: true,
+                    complete: (results) => {
+                        if (results.data.length > 0) {
+                            const headers = Object.keys(results.data[0]);
+                            setCsvHeaders(headers);
+                            setCsvData(results.data);
+                            autoDetectColumns(headers);
+                            setStep(2);
+                        }
+                    }
+                });
+            };
+
+            const parseTextFile = (file) => {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    const text = e.target.result;
+                    processPastedText(text);
+                };
+                reader.readAsText(file);
+            };
+
+            const handlePasteSubmit = () => {
+                if (!pastedText.trim()) return;
+                processPastedText(pastedText);
+            };
+
+            const processPastedText = (text) => {
+                const lines = text.trim().split('\n').filter(line => line.trim());
+                const emailRegex = /([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9_-]+)/gi;
+                
+                const leads = [];
+                
+                // Detect separator (pipe, comma, or tab)
+                const detectSeparator = (line) => {
+                    if (line.includes('|')) return '|';
+                    if (line.includes('\t')) return '\t';
+                    if (line.includes(',')) return ',';
+                    return null; // No separator, just parse normally
+                };
+                
+                lines.forEach(line => {
+                    const emails = line.match(emailRegex);
+                    if (!emails) return;
+                    
+                    const email = emails[0];
+                    const separator = detectSeparator(line);
+                    
+                    let first_name = '';
+                    let last_name = '';
+                    let company = '';
+                    
+                    if (separator) {
+                        // Split by separator
+                        const parts = line.split(separator).map(p => p.trim()).filter(p => p);
+                        
+                        // Find which part has the email
+                        const emailIndex = parts.findIndex(p => p.includes(email));
+                        
+                        // Parts before email = name
+                        // Parts after email = company (or more name)
+                        const beforeEmail = parts.slice(0, emailIndex).join(' ');
+                        const afterEmail = parts.slice(emailIndex + 1).join(' ');
+                        
+                        // Remove email from the part that contains it
+                        let namePart = beforeEmail || parts[emailIndex].replace(email, '').trim();
+                        namePart = namePart.replace(/[<>()[\]{}]/g, '').trim();
+                        
+                        // Split name into first and last
+                        const nameWords = namePart.split(/\s+/).filter(w => w.length > 0);
+                        if (nameWords.length === 1) {
+                            first_name = nameWords[0];
+                        } else if (nameWords.length >= 2) {
+                            first_name = nameWords[0];
+                            last_name = nameWords.slice(1).join(' ');
+                        }
+                        
+                        // Everything after email is company
+                        company = afterEmail.replace(/[<>()[\]{}]/g, '').trim();
+                        
+                    } else {
+                        // No separator - smart extraction
+                        let nameText = line.replace(email, '').trim();
+                        nameText = nameText.replace(/[<>()[\]{}]/g, ' ').trim();
+                        nameText = nameText.replace(/\s+/g, ' ');
+                        
+                        const parts = nameText.split(/\s+/).filter(p => p.length > 0);
+                        
+                        if (parts.length === 1) {
+                            // Only 1 word: First name
+                            first_name = parts[0];
+                        } else if (parts.length === 2) {
+                            // 2 words: First + Last name
+                            first_name = parts[0];
+                            last_name = parts[1];
+                        } else if (parts.length >= 3) {
+                            // 3+ words: First name + Last word is Company
+                            first_name = parts[0];
+                            company = parts[parts.length - 1]; // Last word = company
+                            // Middle words = last name (if any)
+                            if (parts.length > 2) {
+                                last_name = parts.slice(1, -1).join(' ');
+                            }
+                        }
+                    }
+                    
+                    leads.push({
+                        email: email.trim(),
+                        first_name,
+                        last_name,
+                        company,
+                        phone: ''
+                    });
+                });
+
+                if (leads.length > 0) {
+                    setCsvHeaders(['email', 'first_name', 'last_name', 'company', 'phone']);
+                    setCsvData(leads);
+                    setColumnMapping({
+                        email: 'email',
+                        first_name: 'first_name',
+                        last_name: 'last_name',
+                        company: 'company',
+                        phone: 'phone'
+                    });
+                    setStep(3);
+                    validateDataDirect(leads);
+                } else {
+                    alert('No valid emails found in the pasted text');
+                }
+            };
+
+            const autoDetectColumns = (headers) => {
+                const autoMapping = { ...columnMapping };
+                headers.forEach(header => {
+                    const lower = header.toLowerCase().trim();
+                    if (lower.includes('email') || lower === 'e-mail') autoMapping.email = header;
+                    if (lower.includes('first') && lower.includes('name')) autoMapping.first_name = header;
+                    if (lower.includes('last') && lower.includes('name')) autoMapping.last_name = header;
+                    if (lower.includes('company') || lower.includes('organization')) autoMapping.company = header;
+                    if (lower.includes('phone') || lower.includes('mobile') || lower.includes('tel')) autoMapping.phone = header;
+                });
+                setColumnMapping(autoMapping);
+            };
+
+            const validateDataDirect = (data) => {
+                const results = {
+                    valid: [],
+                    invalid: [],
+                    duplicates: [],
+                    warnings: []
+                };
+
+                const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+                const seenEmails = new Set();
+
+                data.forEach((lead, index) => {
+                    const cleanLead = {
+                        rowNumber: index + 1,
+                        email: lead.email?.trim() || '',
+                        first_name: lead.first_name?.trim() || '',
+                        last_name: lead.last_name?.trim() || '',
+                        company: lead.company?.trim() || '',
+                        phone: lead.phone?.trim() || ''
+                    };
+
+                    const issues = [];
+
+                    if (!cleanLead.email) {
+                        issues.push('Missing email');
+                    } else if (!emailRegex.test(cleanLead.email)) {
+                        issues.push('Invalid email format');
+                    } else if (seenEmails.has(cleanLead.email.toLowerCase())) {
+                        results.duplicates.push({ ...cleanLead, issue: 'Duplicate email' });
+                        return;
+                    } else {
+                        seenEmails.add(cleanLead.email.toLowerCase());
+                    }
+
+                    if (!cleanLead.first_name && !cleanLead.last_name) {
+                        issues.push('Missing name');
+                    }
+
+                    if (issues.length > 0) {
+                        results.invalid.push({ ...cleanLead, issues: issues.join(', ') });
+                    } else {
+                        results.valid.push(cleanLead);
+                    }
+                });
+
+                setValidationResults(results);
+            };
+
+            const validateData = () => {
+                const results = {
+                    valid: [],
+                    invalid: [],
+                    duplicates: [],
+                    warnings: []
+                };
+
+                const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+                const seenEmails = new Set();
+
+                csvData.forEach((row, index) => {
+                    const lead = {
+                        rowNumber: index + 1,
+                        email: row[columnMapping.email]?.trim() || '',
+                        first_name: row[columnMapping.first_name]?.trim() || '',
+                        last_name: row[columnMapping.last_name]?.trim() || '',
+                        company: row[columnMapping.company]?.trim() || '',
+                        phone: row[columnMapping.phone]?.trim() || ''
+                    };
+
+                    const issues = [];
+
+                    if (!lead.email) {
+                        issues.push('Missing email');
+                    } else if (!emailRegex.test(lead.email)) {
+                        issues.push('Invalid email format');
+                    } else if (seenEmails.has(lead.email.toLowerCase())) {
+                        results.duplicates.push({ ...lead, issue: 'Duplicate email' });
+                        return;
+                    } else {
+                        seenEmails.add(lead.email.toLowerCase());
+                    }
+
+                    if (!lead.first_name && !lead.last_name) {
+                        issues.push('Missing name');
+                    }
+
+                    if (issues.length > 0) {
+                        results.invalid.push({ ...lead, issues: issues.join(', ') });
+                    } else {
+                        results.valid.push(lead);
+                    }
+                });
+
+                setValidationResults(results);
+                setStep(3);
+            };
+
+            const handleImport = async () => {
+                if (!validationResults || validationResults.valid.length === 0) return;
+
+                setImporting(true);
+                setStep(4);
+                
+                const importResult = await onImport(validationResults.valid);
+                setResult(importResult);
+                setImporting(false);
+            };
+
+            const downloadTemplate = () => {
+                const csv = 'email,first_name,last_name,company,phone\njohn@example.com,John,Doe,Acme Inc,555-1234\njane@example.com,Jane,Smith,Tech Corp,555-5678';
+                const blob = new Blob([csv], { type: 'text/csv' });
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'lead_import_template.csv';
+                a.click();
+            };
+
+            const downloadErrors = () => {
+                if (!validationResults) return;
+                const errors = validationResults.invalid.map(lead => ({
+                    email: lead.email,
+                    issues: lead.issues,
+                    row: lead.rowNumber
+                }));
+                const csv = Papa.unparse(errors);
+                const blob = new Blob([csv], { type: 'text/csv' });
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'import_errors.csv';
+                a.click();
+            };
+
+            return (
+                <div className="bg-white rounded-lg shadow p-6">
+                    <div className="flex items-center justify-between mb-6">
+                        <h3 className="text-lg font-semibold">Smart Lead Import</h3>
+                        {importMethod && (
+                            <div className="flex items-center space-x-2 text-sm">
+                                <div className={`px-3 py-1 rounded ${step >= 1 ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-500'}`}>
+                                    1. Upload
+                                </div>
+                                {importMethod === 'file' && (
+                                    <div className={`px-3 py-1 rounded ${step >= 2 ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-500'}`}>
+                                        2. Map
+                                    </div>
+                                )}
+                                <div className={`px-3 py-1 rounded ${step >= 3 ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-500'}`}>
+                                    {importMethod === 'file' ? '3' : '2'}. Validate
+                                </div>
+                                <div className={`px-3 py-1 rounded ${step >= 4 ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-500'}`}>
+                                    {importMethod === 'file' ? '4' : '3'}. Import
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                    
+                    {/* METHOD SELECTION */}
+                    {!importMethod && (
+                        <div className="space-y-4">
+                            <p className="text-gray-600 mb-4">Choose how you want to import your leads:</p>
+                            
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <button
+                                    onClick={() => { setImportMethod('file'); setStep(1); }}
+                                    className="p-6 border-2 border-gray-200 rounded-lg hover:border-blue-500 hover:bg-blue-50 transition"
+                                >
+                                    <div className="text-4xl mb-3">📁</div>
+                                    <h4 className="font-semibold text-lg mb-2">Upload File</h4>
+                                    <p className="text-sm text-gray-600">
+                                        CSV, Excel (.xlsx), or Text files
+                                    </p>
+                                </button>
+
+                                <button
+                                    onClick={() => { setImportMethod('paste'); setStep(1); }}
+                                    className="p-6 border-2 border-gray-200 rounded-lg hover:border-blue-500 hover:bg-blue-50 transition"
+                                >
+                                    <div className="text-4xl mb-3">📋</div>
+                                    <h4 className="font-semibold text-lg mb-2">Copy & Paste</h4>
+                                    <p className="text-sm text-gray-600">
+                                        From Word, Excel, Notes, anywhere
+                                    </p>
+                                </button>
+                            </div>
+
+                            <button
+                                onClick={onCancel}
+                                className="mt-4 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300"
+                            >
+                                Cancel
+                            </button>
+                        </div>
+                    )}
+
+                    {/* STEP 1: UPLOAD FILE */}
+                    {importMethod === 'file' && step === 1 && (
+                        <div className="space-y-4">
+                            <div className="bg-blue-50 p-4 rounded-lg">
+                                <p className="text-sm text-blue-800 mb-2">
+                                    <strong>📊 Supported formats:</strong> CSV, Excel (.xlsx, .xls), Text (.txt)
+                                </p>
+                                <button
+                                    onClick={downloadTemplate}
+                                    className="text-sm text-blue-600 hover:text-blue-700 underline"
+                                >
+                                    Download CSV Template
+                                </button>
+                            </div>
+
+                            <div>
+                                <input
+                                    type="file"
+                                    accept=".csv,.xlsx,.xls,.txt"
+                                    onChange={handleFileChange}
+                                    className="block w-full text-sm text-gray-500
+                                        file:mr-4 file:py-2 file:px-4
+                                        file:rounded-lg file:border-0
+                                        file:text-sm file:font-semibold
+                                        file:bg-blue-50 file:text-blue-700
+                                        hover:file:bg-blue-100"
+                                />
+                            </div>
+
+                            <div className="flex space-x-3">
+                                <button
+                                    onClick={() => setImportMethod(null)}
+                                    className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300"
+                                >
+                                    Back
+                                </button>
+                                <button
+                                    onClick={onCancel}
+                                    className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300"
+                                >
+                                    Cancel
+                                </button>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* STEP 1: COPY-PASTE */}
+                    {importMethod === 'paste' && step === 1 && (
+                        <div className="space-y-4">
+                            <div className="bg-green-50 p-4 rounded-lg">
+                                <p className="text-sm text-green-800 mb-2">
+                                    <strong>✨ Paste your leads - We'll auto-detect the format!</strong>
+                                </p>
+                                <p className="text-xs text-green-700">
+                                    Supports any format:
+                                </p>
+                                <ul className="text-xs text-green-700 ml-4 mt-1">
+                                    <li>• Name | Email | Company (pipe separated)</li>
+                                    <li>• Name, Email, Company (comma separated)</li>
+                                    <li>• Name    Email    Company (tabs from Excel)</li>
+                                    <li>• Just emails (one per line)</li>
+                                    <li>• Copy directly from Excel/Google Sheets</li>
+                                </ul>
+                            </div>
+
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-2">
+                                    Paste Your Data:
+                                </label>
+                                <textarea
+                                    value={pastedText}
+                                    onChange={(e) => setPastedText(e.target.value)}
+                                    placeholder="John Doe | john@company.com | Acme Inc
+Jane Smith, jane@startup.io, TechCorp
+Bob Wilson    bob@email.com    StartUp LLC
+
+Or just paste emails:
+john@company.com
+jane@startup.io"
+                                    className="w-full px-3 py-2 border border-gray-300 rounded-lg font-mono text-sm"
+                                    rows="12"
+                                />
+                            </div>
+
+                            <div className="flex space-x-3">
+                                <button
+                                    onClick={handlePasteSubmit}
+                                    disabled={!pastedText.trim()}
+                                    className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+                                >
+                                    Process & Validate
+                                </button>
+                                <button
+                                    onClick={() => setImportMethod(null)}
+                                    className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300"
+                                >
+                                    Back
+                                </button>
+                                <button
+                                    onClick={onCancel}
+                                    className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300"
+                                >
+                                    Cancel
+                                </button>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* STEP 2: MAP COLUMNS (File upload only) */}
+                    {importMethod === 'file' && step === 2 && (
+                        <div className="space-y-4">
+                            <div className="bg-green-50 p-4 rounded-lg">
+                                <p className="text-sm text-green-800">
+                                    ✅ Found {csvData.length} rows. Map your CSV columns to our fields:
+                                </p>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-4">
+                                {Object.keys(columnMapping).map(field => (
+                                    <div key={field}>
+                                        <label className="block text-sm font-medium text-gray-700 mb-1 capitalize">
+                                            {field.replace('_', ' ')} {field === 'email' && <span className="text-red-500">*</span>}
+                                        </label>
+                                        <select
+                                            value={columnMapping[field]}
+                                            onChange={(e) => setColumnMapping({...columnMapping, [field]: e.target.value})}
+                                            className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                                        >
+                                            <option value="">-- Select Column --</option>
+                                            {csvHeaders.map(header => (
+                                                <option key={header} value={header}>{header}</option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                ))}
+                            </div>
+
+                            <div className="bg-gray-50 p-4 rounded">
+                                <p className="text-sm font-medium mb-2">Preview:</p>
+                                <div className="overflow-x-auto">
+                                    <table className="min-w-full text-xs">
+                                        <thead className="bg-white">
+                                            <tr>
+                                                <th className="px-2 py-1 text-left">Email</th>
+                                                <th className="px-2 py-1 text-left">First</th>
+                                                <th className="px-2 py-1 text-left">Last</th>
+                                                <th className="px-2 py-1 text-left">Company</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {csvData.slice(0, 3).map((row, index) => (
+                                                <tr key={index} className="border-t">
+                                                    <td className="px-2 py-1">{row[columnMapping.email]}</td>
+                                                    <td className="px-2 py-1">{row[columnMapping.first_name]}</td>
+                                                    <td className="px-2 py-1">{row[columnMapping.last_name]}</td>
+                                                    <td className="px-2 py-1">{row[columnMapping.company]}</td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+
+                            <div className="flex space-x-3">
+                                <button
+                                    onClick={validateData}
+                                    disabled={!columnMapping.email}
+                                    className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+                                >
+                                    Next: Validate Data
+                                </button>
+                                <button
+                                    onClick={() => setStep(1)}
+                                    className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300"
+                                >
+                                    Back
+                                </button>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* STEP 3: VALIDATE */}
+                    {step === 3 && validationResults && (
+                        <div className="space-y-4">
+                            <div className="grid grid-cols-3 gap-4">
+                                <div className="bg-green-50 p-4 rounded-lg">
+                                    <p className="text-2xl font-bold text-green-700">{validationResults.valid.length}</p>
+                                    <p className="text-sm text-green-600">Valid Leads</p>
+                                </div>
+                                <div className="bg-red-50 p-4 rounded-lg">
+                                    <p className="text-2xl font-bold text-red-700">{validationResults.invalid.length}</p>
+                                    <p className="text-sm text-red-600">Invalid Leads</p>
+                                </div>
+                                <div className="bg-yellow-50 p-4 rounded-lg">
+                                    <p className="text-2xl font-bold text-yellow-700">{validationResults.duplicates.length}</p>
+                                    <p className="text-sm text-yellow-600">Duplicates</p>
+                                </div>
+                            </div>
+
+                            {validationResults.invalid.length > 0 && (
+                                <div className="bg-red-50 p-4 rounded-lg">
+                                    <div className="flex justify-between items-start mb-2">
+                                        <p className="text-sm font-medium text-red-800">❌ Issues Found:</p>
+                                        <button
+                                            onClick={downloadErrors}
+                                            className="text-xs text-red-600 hover:text-red-700 underline"
+                                        >
+                                            Download Error Report
+                                        </button>
+                                    </div>
+                                    <div className="max-h-40 overflow-y-auto">
+                                        <table className="min-w-full text-xs">
+                                            <thead className="bg-red-100 sticky top-0">
+                                                <tr>
+                                                    <th className="px-2 py-1 text-left">Row</th>
+                                                    <th className="px-2 py-1 text-left">Email</th>
+                                                    <th className="px-2 py-1 text-left">Issues</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {validationResults.invalid.slice(0, 10).map((lead, index) => (
+                                                    <tr key={index} className="border-t border-red-200">
+                                                        <td className="px-2 py-1">{lead.rowNumber}</td>
+                                                        <td className="px-2 py-1">{lead.email || '-'}</td>
+                                                        <td className="px-2 py-1 text-red-700">{lead.issues}</td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            )}
+
+                            {validationResults.duplicates.length > 0 && (
+                                <div className="bg-yellow-50 p-3 rounded-lg">
+                                    <p className="text-sm text-yellow-800">
+                                        ⚠️ {validationResults.duplicates.length} duplicate emails will be skipped
+                                    </p>
+                                </div>
+                            )}
+
+                            <div className="flex space-x-3">
+                                <button
+                                    onClick={handleImport}
+                                    disabled={validationResults.valid.length === 0}
+                                    className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50"
+                                >
+                                    Import {validationResults.valid.length} Valid Leads
+                                </button>
+                                <button
+                                    onClick={() => setStep(2)}
+                                    className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300"
+                                >
+                                    Back to Mapping
+                                </button>
+                                <button
+                                    onClick={onCancel}
+                                    className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300"
+                                >
+                                    Cancel
+                                </button>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* STEP 4: IMPORTING/RESULTS */}
+                    {step === 4 && (
+                        <div className="space-y-4">
+                            {importing ? (
+                                <div className="text-center py-8">
+                                    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+                                    <p className="text-gray-600">Importing {validationResults.valid.length} leads...</p>
+                                </div>
+                            ) : result ? (
+                                <div>
+                                    <div className="bg-green-50 p-6 rounded-lg text-center">
+                                        <div className="text-5xl mb-4">🎉</div>
+                                        <p className="text-2xl font-bold text-green-700 mb-2">
+                                            Import Complete!
+                                        </p>
+                                        <p className="text-lg text-green-600">
+                                            ✅ Successfully imported {result.success} leads
+                                        </p>
+                                        {result.failed > 0 && (
+                                            <p className="text-sm text-red-600 mt-2">
+                                                ❌ {result.failed} leads failed to import
+                                            </p>
+                                        )}
+                                    </div>
+                                    <button
+                                        onClick={onCancel}
+                                        className="mt-4 w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                                    >
+                                        Done
+                                    </button>
+                                </div>
+                            ) : null}
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        function StatusBadge({ status }) {
+            const colors = {
+                new: 'bg-blue-100 text-blue-800',
+                active: 'bg-green-100 text-green-800',
+                analyzed: 'bg-indigo-100 text-indigo-800',
+                replied: 'bg-purple-100 text-purple-800',
+                interested: 'bg-red-100 text-red-800',
+                dead: 'bg-gray-100 text-gray-800'
+            };
+
+            return (
+                <span className={`px-2 py-1 text-xs font-medium rounded ${colors[status] || 'bg-gray-100 text-gray-800'}`}>
+                    {status}
+                </span>
+            );
+        }
+
+        function IntentBadge({ intent }) {
+            const colors = {
+                INTERESTED: 'bg-red-100 text-red-800',
+                NOT_NOW: 'bg-yellow-100 text-yellow-800',
+                OBJECTION: 'bg-orange-100 text-orange-800',
+                GHOSTING: 'bg-gray-100 text-gray-800',
+                DEAD: 'bg-black text-white'
+            };
+
+            return (
+                <span className={`px-2 py-1 text-xs font-medium rounded ${colors[intent] || 'bg-gray-100 text-gray-800'}`}>
+                    {intent}
+                </span>
+            );
+        }
+
+        // Sequences View Component
+        function SequencesView({ token, isDemoMode }) {
+            const [sequences, setSequences] = useState([]);
+            const [showCreateForm, setShowCreateForm] = useState(false);
+            const [loading, setLoading] = useState(true);
+
+            useEffect(() => {
+                fetchSequences();
+            }, []);
+
+            const fetchSequences = async () => {
+                if (isDemoMode) {
+                    setTimeout(() => {
+                        setSequences(DEMO_DATA.sequences);
+                        setLoading(false);
+                    }, 500);
+                    return;
+                }
+
+                try {
+                    const response = await fetch(`${API_URL}/sequences`, {
+                        headers: { 'Authorization': `Bearer ${token}` }
+                    });
+                    const data = await response.json();
+                    setSequences(data.sequences);
+                } catch (error) {
+                    console.error('Error fetching sequences:', error);
+                    setSequences(DEMO_DATA.sequences);
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            const createSequence = async (sequenceData) => {
+                if (isDemoMode) {
+                    const newSequence = {
+                        id: sequences.length + 1,
+                        ...sequenceData,
+                        is_active: false
+                    };
+                    setSequences([...sequences, newSequence]);
+                    setShowCreateForm(false);
+                    return;
+                }
+
+                try {
+                    const response = await fetch(`${API_URL}/sequences`, {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${token}`,
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify(sequenceData)
+                    });
+                    
+                    if (response.ok) {
+                        fetchSequences();
+                        setShowCreateForm(false);
+                    }
+                } catch (error) {
+                    console.error('Error creating sequence:', error);
+                }
+            };
+
+            return (
+                <div className="space-y-6">
+                    <div className="flex justify-between items-center">
+                        <h2 className="text-2xl font-bold text-gray-800">Email Sequences</h2>
+                        <button
+                            onClick={() => setShowCreateForm(true)}
+                            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                        >
+                            + Create Sequence
+                        </button>
+                    </div>
+
+                    {showCreateForm && (
+                        <CreateSequenceForm 
+                            onSubmit={createSequence}
+                            onCancel={() => setShowCreateForm(false)}
+                        />
+                    )}
+
+                    {loading ? (
+                        <div className="text-center py-8">Loading sequences...</div>
+                    ) : sequences.length === 0 ? (
+                        <div className="bg-white rounded-lg shadow p-8 text-center">
+                            <p className="text-gray-600 mb-4">No sequences yet. Create your first sequence!</p>
+                        </div>
+                    ) : (
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            {sequences.map(sequence => (
+                                <div key={sequence.id} className="bg-white rounded-lg shadow p-6">
+                                    <div className="flex justify-between items-start mb-4">
+                                        <h3 className="text-lg font-semibold">{sequence.name}</h3>
+                                        <span className={`px-2 py-1 text-xs font-medium rounded ${sequence.is_active ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'}`}>
+                                            {sequence.is_active ? 'Active' : 'Inactive'}
+                                        </span>
+                                    </div>
+                                    <p className="text-sm text-gray-600">{sequence.description || 'No description'}</p>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        function CreateSequenceForm({ onSubmit, onCancel }) {
+            const [name, setName] = useState('');
+            const [description, setDescription] = useState('');
+            const [steps, setSteps] = useState([
+                { delay_days: 0, email_template: 'Hi {{first_name}},\n\nI noticed you {{lead_source}}...' }
+            ]);
+
+            const handleSubmit = (e) => {
+                e.preventDefault();
+                onSubmit({ name, description, steps });
+            };
+
+            const addStep = () => {
+                setSteps([...steps, { delay_days: 3, email_template: '' }]);
+            };
+
+            return (
+                <div className="bg-white rounded-lg shadow p-6">
+                    <h3 className="text-lg font-semibold mb-4">Create New Sequence</h3>
+                    <form onSubmit={handleSubmit} className="space-y-4">
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">
+                                Sequence Name *
+                            </label>
+                            <input
+                                type="text"
+                                required
+                                value={name}
+                                onChange={(e) => setName(e.target.value)}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                                placeholder="e.g., Standard 7-Day Follow-Up"
+                            />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">
+                                Description
+                            </label>
+                            <textarea
+                                value={description}
+                                onChange={(e) => setDescription(e.target.value)}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                                rows="2"
+                                placeholder="What's this sequence for?"
+                            />
+                        </div>
+
+                        <div className="space-y-3">
+                            <label className="block text-sm font-medium text-gray-700">
+                                Email Steps
+                            </label>
+                            {steps.map((step, index) => (
+                                <div key={index} className="border border-gray-200 rounded-lg p-4">
+                                    <div className="flex items-center space-x-3 mb-3">
+                                        <span className="font-medium">Step {index + 1}</span>
+                                        <input
+                                            type="number"
+                                            value={step.delay_days}
+                                            onChange={(e) => {
+                                                const newSteps = [...steps];
+                                                newSteps[index].delay_days = parseInt(e.target.value);
+                                                setSteps(newSteps);
+                                            }}
+                                            className="w-20 px-2 py-1 border border-gray-300 rounded"
+                                            min="0"
+                                        />
+                                        <span className="text-sm text-gray-600">days delay</span>
+                                    </div>
+                                    <textarea
+                                        value={step.email_template}
+                                        onChange={(e) => {
+                                            const newSteps = [...steps];
+                                            newSteps[index].email_template = e.target.value;
+                                            setSteps(newSteps);
+                                        }}
+                                        className="w-full px-3 py-2 border border-gray-300 rounded-lg font-mono text-sm"
+                                        rows="4"
+                                        placeholder="Email template (use {{first_name}}, {{company}}, etc.)"
+                                    />
+                                </div>
+                            ))}
+                            <button
+                                type="button"
+                                onClick={addStep}
+                                className="text-sm text-blue-600 hover:text-blue-700"
+                            >
+                                + Add Step
+                            </button>
+                        </div>
+
+                        <div className="flex space-x-3">
+                            <button
+                                type="submit"
+                                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                            >
+                                Create Sequence
+                            </button>
+                            <button
+                                type="button"
+                                onClick={onCancel}
+                                className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300"
+                            >
+                                Cancel
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            );
+        }
+
+        // Render the app
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
