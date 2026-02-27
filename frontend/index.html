@@ -819,8 +819,8 @@ STRIPE_PRICE_GROWTH_ANNUAL=price_YOUR_ID_HERE`}</pre>
 
                 try {
                     const controller = new AbortController();
-                    const timeoutId = setTimeout(() => controller.abort(), 3000);
-                    
+                    const timeoutId = setTimeout(() => controller.abort(), 15000);
+
                     const response = await fetch(`${API_URL}/health`, {
                         signal: controller.signal
                     });
