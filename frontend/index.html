@@ -181,7 +181,9 @@
         const { useState, useEffect } = React;
 
         // API Configuration with fallback to demo mode
-        const API_URL = 'http://localhost:3000';
+        const API_URL = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+          ? 'http://localhost:3000'
+          : 'https://ai-lead-recovery.onrender.com';
         const DEMO_MODE_KEY = 'demo_mode_enabled';
 
         // Parse "YYYY-MM-DD" + "HH:MM" as LOCAL device time.
