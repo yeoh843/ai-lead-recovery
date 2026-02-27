@@ -333,11 +333,11 @@ app.post('/api/auth/register', async (req, res) => {
   const { email, password, company_name } = req.body;
   if (!email || !password) return res.status(400).json({ error: 'Email and password are required' });
 
-  // Block free/personal email domains — require business email
-  const emailDomain = email.split('@')[1]?.toLowerCase();
-  if (!emailDomain || FREE_EMAIL_DOMAINS.includes(emailDomain)) {
-    return res.status(400).json({ error: 'Please use your business email address to sign up.' });
-  }
+  // Allow any email domain (commented out to allow public signups)
+  // const emailDomain = email.split('@')[1]?.toLowerCase();
+  // if (!emailDomain || FREE_EMAIL_DOMAINS.includes(emailDomain)) {
+  //   return res.status(400).json({ error: 'Please use your business email address to sign up.' });
+  // }
 
   await db.read();
   if ((db.data.users || []).find(u => u.email === email)) {
