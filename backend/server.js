@@ -5565,7 +5565,7 @@ async function processSequenceSteps() {
   const now = Date.now();
 
   // Get all leads currently enrolled in a sequence and not yet completed
-  const enrolledLeads = db.data.leads.filter(l =>
+  const enrolledLeads = (db.data.leads || []).filter(l =>
     l.enrolled_sequence_id &&
     l.sequence_completed === false &&
     !l.sequence_paused &&
@@ -5575,10 +5575,10 @@ async function processSequenceSteps() {
   for (const lead of enrolledLeads) {
     try {
       const seqId = lead.enrolled_sequence_id;
-      const sequence = db.data.sequences.find(s => s.id === seqId);
+      const sequence = (db.data.sequences || []).find(s => s.id === seqId);
       if (!sequence || !sequence.is_active) continue;
 
-      const steps = db.data.sequence_steps
+      const steps = (db.data.sequence_steps || [])
         .filter(s => s.sequence_id === seqId)
         .sort((a, b) => a.step_number - b.step_number);
 
