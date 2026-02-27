@@ -6249,7 +6249,7 @@ async function refreshAllGmailTokens() {
   try {
     await db.read();
 
-    const gmailSettings = db.data.email_settings.filter(
+    const gmailSettings = (db.data.email_settings || []).filter(
       s => s.provider === 'gmail' && s.refresh_token
     );
 
@@ -6339,7 +6339,7 @@ async function checkGmailAutomatic() {
     await db.read();
 
     // Check all users with Gmail OAuth configured
-    const gmailSettings = db.data.email_settings.filter(s => s.provider === 'gmail' && s.access_token);
+    const gmailSettings = (db.data.email_settings || []).filter(s => s.provider === 'gmail' && s.access_token);
 
     for (const settings of gmailSettings) {
       try {
