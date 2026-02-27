@@ -120,6 +120,9 @@ if (!db.data.winning_emails) db.data.winning_emails = [];
 if (!db.data.ab_results) db.data.ab_results = [];
 if (!db.data.appointments) db.data.appointments = [];
 
+// Write to ensure db.json is created with default schema
+await db.write();
+
 // Billing migrations — add billing fields to existing users and ensure subscriptions exists
 if (!db.data.subscriptions) db.data.subscriptions = [];
 if (db.data.users && db.data.users.length > 0) {
@@ -337,14 +340,14 @@ app.post('/api/auth/register', async (req, res) => {
   }
 
   await db.read();
-  if (db.data.users.find(u => u.email === email)) {
+  if ((db.data.users || []).find(u => u.email === email)) {
     return res.status(400).json({ error: 'Email already exists' });
   }
 
   const hashedPassword = await bcrypt.hash(password, 10);
   const trialEnd = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000); // 14 days
   const user = {
-    id: db.data.users.length + 1,
+    id: (db.data.users || []).length + 1,
     email,
     password: hashedPassword,
     company_name: company_name || '',
@@ -369,7 +372,7 @@ app.post('/api/auth/register', async (req, res) => {
 app.post('/api/auth/login', async (req, res) => {
   const { email, password } = req.body;
   await db.read();
-  const user = db.data.users.find(u => u.email === email);
+  const user = (db.data.users || []).find(u => u.email === email);
 
   if (!user || !await bcrypt.compare(password, user.password)) {
     return res.status(401).json({ error: 'Invalid credentials' });
@@ -382,7 +385,7 @@ app.post('/api/auth/login', async (req, res) => {
 app.get('/api/auth/me', authenticate, async (req, res) => {
   try {
     await db.read();
-    const user = db.data.users.find(u => u.id === req.userId);
+    const user = (db.data.users || []).find(u => u.id === req.userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
     // Calculate active leads for this user (safe with try/catch)
