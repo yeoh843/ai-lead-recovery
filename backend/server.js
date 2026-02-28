@@ -394,6 +394,12 @@ app.post('/api/auth/login', async (req, res) => {
 app.get('/api/auth/me', authenticate, async (req, res) => {
   try {
     await db.read();
+
+    // Ensure all tables exist after read
+    if (!db.data) db.data = {};
+    if (!db.data.users) db.data.users = [];
+    if (!db.data.leads) db.data.leads = [];
+
     const user = (db.data.users || []).find(u => u.id === req.userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
