@@ -340,6 +340,15 @@ app.post('/api/auth/register', async (req, res) => {
   // }
 
   await db.read();
+
+  // Ensure all tables exist after read (in case db.json is empty on fresh deployments)
+  if (!db.data) db.data = {};
+  if (!db.data.users) db.data.users = [];
+  if (!db.data.leads) db.data.leads = [];
+  if (!db.data.sequences) db.data.sequences = [];
+  if (!db.data.sequence_steps) db.data.sequence_steps = [];
+  if (!db.data.email_settings) db.data.email_settings = [];
+
   if ((db.data.users || []).find(u => u.email === email)) {
     return res.status(400).json({ error: 'Email already exists' });
   }
