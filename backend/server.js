@@ -14,6 +14,7 @@ import multer from 'multer';
 import { google } from 'googleapis';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { existsSync } from 'fs';
 import Stripe from 'stripe';
 
 dotenv.config();
@@ -92,7 +93,11 @@ app.use((req, res, next) => {
   next();
 });
 
-const adapter = new JSONFile('db.json');
+// Use persistent disk on Render (/mnt/data is the mounted disk), or local file for development
+const dbPath = '/mnt/data/db.json'; // Render persistent disk path
+// For local development, fallback to local db.json if /mnt/data doesn't exist
+const actualDbPath = existsSync('/mnt/data') ? dbPath : 'db.json';
+const adapter = new JSONFile(actualDbPath);
 const db = new Low(adapter, {});
 
 // Helper function to ensure all database tables exist (defined first)
