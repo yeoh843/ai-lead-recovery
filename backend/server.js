@@ -95,36 +95,36 @@ app.use((req, res, next) => {
 const adapter = new JSONFile('db.json');
 const db = new Low(adapter, {});
 
+// Helper function to ensure all database tables exist (defined first)
+function ensureDbTables() {
+  if (!db.data) db.data = {};
+  if (!db.data.users) db.data.users = [];
+  if (!db.data.leads) db.data.leads = [];
+  if (!db.data.sequences) db.data.sequences = [];
+  if (!db.data.sequence_steps) db.data.sequence_steps = [];
+  if (!db.data.campaigns) db.data.campaigns = [];
+  if (!db.data.email_events) db.data.email_events = [];
+  if (!db.data.lead_sources) db.data.lead_sources = [];
+  if (!db.data.email_settings) db.data.email_settings = [];
+  if (!db.data.ai_drafts) db.data.ai_drafts = [];
+  if (!db.data.email_threads) db.data.email_threads = [];
+  if (!db.data.email_history) db.data.email_history = [];
+  if (!db.data.product_profiles) db.data.product_profiles = [];
+  if (!db.data.seller_profiles) db.data.seller_profiles = [];
+  if (!db.data.email_templates) db.data.email_templates = [];
+  if (!db.data.winning_emails) db.data.winning_emails = [];
+  if (!db.data.ab_results) db.data.ab_results = [];
+  if (!db.data.appointments) db.data.appointments = [];
+  if (!db.data.subscriptions) db.data.subscriptions = [];
+  if (!db.data.email_interactions) db.data.email_interactions = [];
+}
+
+// Read database and ensure all tables exist
 await db.read();
-db.data ||= {
-  users: [],
-  leads: [],
-  sequences: [],
-  sequence_steps: [],
-  campaigns: [],
-  email_events: [],
-  lead_sources: [],
-  email_settings: [],
-  ai_drafts: [],
-  email_threads: [],
-  email_history: [], // Track all sent emails (initial + follow-ups)
-  product_profiles: [], // Store product/service information for AI email generation
-  seller_profiles: [],  // Seller's own contact info — kept separate from product docs
-  email_templates: [], // Unlayer email templates with design JSON and HTML
-  winning_emails: [],  // Emails that triggered positive replies — used for AI learning
-  ab_results: []       // A/B test tracking: which email style wins per user per intent
-};
-
-// Ensure new tables exist for older installs
-if (!db.data.winning_emails) db.data.winning_emails = [];
-if (!db.data.ab_results) db.data.ab_results = [];
-if (!db.data.appointments) db.data.appointments = [];
-
-// Write to ensure db.json is created with default schema
-await db.write();
+ensureDbTables();
+await db.write(); // Persist any newly created tables
 
 // Billing migrations — add billing fields to existing users and ensure subscriptions exists
-if (!db.data.subscriptions) db.data.subscriptions = [];
 if (db.data.users && db.data.users.length > 0) {
   let billingMigrationNeeded = false;
   const trialDays = 14;
