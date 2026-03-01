@@ -470,9 +470,10 @@ app.get('/api/auth/google/callback', async (req, res) => {
   try {
     const { code, state } = req.query;
     const userId = parseInt(state);
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
 
     if (!code || !userId) {
-      return res.redirect('http://localhost:3000/settings?error=oauth_failed');
+      return res.redirect(`${baseUrl}/settings?error=oauth_failed`);
     }
 
     // Exchange code for tokens
@@ -519,11 +520,12 @@ app.get('/api/auth/google/callback', async (req, res) => {
 
     await db.write();
 
-    // Redirect back to frontend (served from backend on port 3000)
-    res.redirect('http://localhost:3000/settings?success=gmail_connected');
+    // Redirect back to frontend (works for both localhost and production)
+    res.redirect(`${baseUrl}/settings?success=gmail_connected`);
   } catch (error) {
     console.error('OAuth callback error:', error);
-    res.redirect('http://localhost:3000/settings?error=oauth_failed');
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    res.redirect(`${baseUrl}/settings?error=oauth_failed`);
   }
 });
 
