@@ -87,7 +87,7 @@ app.use(express.static(path.join(__dirname, '../frontend')));
 // Support routes both with and without /api/ prefix
 // Frontend calls /auth/login, /leads etc. but routes are defined as /api/auth/login, /api/leads
 app.use((req, res, next) => {
-  if (!req.path.startsWith('/api') && req.path !== '/health') {
+  if (!req.path.startsWith('/api') && req.path !== '/health' && !req.path.match(/\.(html|css|js|json|png|jpg|svg)$/i)) {
     req.url = '/api' + req.url;
   }
   next();
