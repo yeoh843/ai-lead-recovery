@@ -1667,8 +1667,50 @@ STRIPE_PRICE_GROWTH_ANNUAL=price_YOUR_ID_HERE`}</pre>
             const [composeModal, setComposeModal] = useState({ isOpen: false, lead: null });
             const [outcomeModal, setOutcomeModal] = useState({ isOpen: false, appointment: null });
 
+            // Emergency auto-send pause state
+            const [autoModeEnabled, setAutoModeEnabled] = useState(false);
+            const [autoModePaused, setAutoModePaused] = useState(false);
+            const [togglingPause, setTogglingPause] = useState(false);
+
+            const fetchAutoModeState = async () => {
+                if (isDemoMode) return;
+                try {
+                    const res = await fetch(`${API_URL}/api/settings/auto-mode`, {
+                        headers: { 'Authorization': `Bearer ${token}` }
+                    });
+                    if (res.ok) {
+                        const data = await res.json();
+                        setAutoModeEnabled(data.auto_mode_enabled || false);
+                        setAutoModePaused(data.auto_mode_paused || false);
+                    }
+                } catch(e) { console.error(e); }
+            };
+
+            const toggleAutoModePause = async () => {
+                setTogglingPause(true);
+                const newState = !autoModePaused;
+                setAutoModePaused(newState);
+                try {
+                    const res = await fetch(`${API_URL}/api/settings/auto-mode`, {
+                        method: 'POST',
+                        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ auto_mode_paused: newState })
+                    });
+                    if (!res.ok) {
+                        setAutoModePaused(!newState);
+                        alert('Failed to toggle pause');
+                    }
+                } catch(e) {
+                    setAutoModePaused(!newState);
+                    alert('Failed to toggle pause: ' + e.message);
+                } finally {
+                    setTogglingPause(false);
+                }
+            };
+
             useEffect(() => {
                 fetchAnalytics();
+                fetchAutoModeState();
             }, [dateRange]);
 
             const fetchAnalytics = async () => {
@@ -1729,6 +1771,35 @@ STRIPE_PRICE_GROWTH_ANNUAL=price_YOUR_ID_HERE`}</pre>
 
             return (
                 <div className="space-y-6">
+
+                    {/* ── EMERGENCY PAUSE BANNER ── */}
+                    {autoModeEnabled && (
+                        <div className={`flex items-center justify-between px-4 py-2 rounded-lg ${
+                            autoModePaused
+                                ? 'bg-yellow-50 dark:bg-yellow-900/30 border border-yellow-300 dark:border-yellow-700'
+                                : 'bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800'
+                        }`}>
+                            <div className="flex items-center gap-2">
+                                <span className="text-sm font-medium">
+                                    {autoModePaused
+                                        ? '⏸️ Auto-send is PAUSED — no emails being sent'
+                                        : '⚡ Auto Mode is active — emails sent based on Follow-Up Rules'}
+                                </span>
+                            </div>
+                            <button
+                                onClick={toggleAutoModePause}
+                                disabled={togglingPause}
+                                className={`px-4 py-1.5 rounded-lg text-sm font-semibold text-white transition-all ${
+                                    autoModePaused
+                                        ? 'bg-green-600 hover:bg-green-700'
+                                        : 'bg-red-600 hover:bg-red-700'
+                                } ${togglingPause ? 'opacity-50' : ''}`}
+                            >
+                                {togglingPause ? '...' : autoModePaused ? '▶️ Resume Auto-Send' : '⏸️ Pause All'}
+                            </button>
+                        </div>
+                    )}
+
                     <div className="flex justify-between items-center">
                         <h2 className="text-2xl font-bold text-gray-800 dark:text-white">Analytics Dashboard</h2>
                         <select 
@@ -5298,44 +5369,6 @@ jane@startup.io"
                                     )}
                                 </div>
 
-                                {/* Emergency Pause Button */}
-                                {emailSettings.sending_mode === 'auto' && (
-                                    <div className="mt-4 p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
-                                        <p className="text-sm text-gray-700 dark:text-gray-300 mb-3">
-                                            <strong>⚠️ If emails are sending too fast:</strong>
-                                        </p>
-                                        <button
-                                            onClick={async () => {
-                                                const newPausedState = !emailSettings.auto_mode_paused;
-                                                setEmailSettings({ ...emailSettings, auto_mode_paused: newPausedState });
-                                                if (!isDemoMode && token) {
-                                                    try {
-                                                        const response = await fetch(`${API_URL}/api/settings/auto-mode`, {
-                                                            method: 'POST',
-                                                            headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-                                                            body: JSON.stringify({ auto_mode_paused: newPausedState })
-                                                        });
-                                                        if (response.ok) {
-                                                            const data = await response.json();
-                                                            setEmailSettings({ ...emailSettings, auto_mode_paused: newPausedState });
-                                                            alert(data.message);
-                                                        }
-                                                    } catch(e) {
-                                                        alert('Failed to toggle pause: ' + e.message);
-                                                        setEmailSettings({ ...emailSettings, auto_mode_paused: !newPausedState });
-                                                    }
-                                                }
-                                            }}
-                                            className={`w-full px-4 py-3 rounded-lg font-semibold text-white transition-all ${
-                                                emailSettings.auto_mode_paused
-                                                    ? 'bg-green-600 hover:bg-green-700'
-                                                    : 'bg-red-600 hover:bg-red-700'
-                                            }`}
-                                        >
-                                            {emailSettings.auto_mode_paused ? '▶️ Resume Auto-Send' : '⏸️ PAUSE Auto-Send'}
-                                        </button>
-                                    </div>
-                                )}
                             </div>
 
                             {/* Custom AI Instructions */}
@@ -8103,6 +8136,45 @@ jane@startup.io"
             const [pendingFollowUps, setPendingFollowUps] = useState([]);
             const [showPendingOnly, setShowPendingOnly] = useState(false);
 
+            // Emergency auto-send pause state
+            const [autoModeEnabled, setAutoModeEnabled] = useState(false);
+            const [autoModePaused, setAutoModePaused] = useState(false);
+            const [togglingPause, setTogglingPause] = useState(false);
+
+            const fetchAutoModeState = async () => {
+                if (isDemoMode) return;
+                try {
+                    const res = await fetch(`${API_URL}/api/settings/auto-mode`, { headers: headers() });
+                    if (res.ok) {
+                        const data = await res.json();
+                        setAutoModeEnabled(data.auto_mode_enabled || false);
+                        setAutoModePaused(data.auto_mode_paused || false);
+                    }
+                } catch(e) { console.error(e); }
+            };
+
+            const toggleAutoModePause = async () => {
+                setTogglingPause(true);
+                const newState = !autoModePaused;
+                setAutoModePaused(newState);
+                try {
+                    const res = await fetch(`${API_URL}/api/settings/auto-mode`, {
+                        method: 'POST',
+                        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ auto_mode_paused: newState })
+                    });
+                    if (!res.ok) {
+                        setAutoModePaused(!newState);
+                        alert('Failed to toggle pause');
+                    }
+                } catch(e) {
+                    setAutoModePaused(!newState);
+                    alert('Failed to toggle pause: ' + e.message);
+                } finally {
+                    setTogglingPause(false);
+                }
+            };
+
             const loadPendingFollowUps = async () => {
                 if (isDemoMode) return;
                 try {
@@ -8114,7 +8186,7 @@ jane@startup.io"
                 } catch(e) { console.error(e); }
             };
 
-            useEffect(() => { loadAllLeads(); loadPendingFollowUps(); }, []);
+            useEffect(() => { loadAllLeads(); loadPendingFollowUps(); fetchAutoModeState(); }, []);
             useEffect(() => { loadFilteredLeads(); }, [intentFilter]);
 
             // Keep ref in sync with state (for use in event listeners without stale closure)
@@ -8597,7 +8669,37 @@ jane@startup.io"
             }, {});
 
             return (
-                <div className="flex h-full border-t border-gray-200 dark:border-gray-800">
+                <div className="flex flex-col h-full">
+
+                    {/* ── EMERGENCY PAUSE BANNER ── */}
+                    {autoModeEnabled && (
+                        <div className={`flex items-center justify-between px-4 py-2 border-b ${
+                            autoModePaused
+                                ? 'bg-yellow-50 dark:bg-yellow-900/30 border-yellow-300 dark:border-yellow-700'
+                                : 'bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800'
+                        }`}>
+                            <div className="flex items-center gap-2">
+                                <span className="text-sm font-medium">
+                                    {autoModePaused
+                                        ? '⏸️ Auto-send is PAUSED — no emails being sent'
+                                        : '⚡ Auto Mode is active — emails sent based on Follow-Up Rules'}
+                                </span>
+                            </div>
+                            <button
+                                onClick={toggleAutoModePause}
+                                disabled={togglingPause}
+                                className={`px-4 py-1.5 rounded-lg text-sm font-semibold text-white transition-all ${
+                                    autoModePaused
+                                        ? 'bg-green-600 hover:bg-green-700'
+                                        : 'bg-red-600 hover:bg-red-700'
+                                } ${togglingPause ? 'opacity-50' : ''}`}
+                            >
+                                {togglingPause ? '...' : autoModePaused ? '▶️ Resume Auto-Send' : '⏸️ Pause All'}
+                            </button>
+                        </div>
+                    )}
+
+                    <div className="flex flex-1 overflow-hidden border-t border-gray-200 dark:border-gray-800">
 
                     {/* ── LEFT SIDEBAR ── */}
                     <div className="w-52 flex-shrink-0 bg-white dark:bg-gray-950 border-r border-gray-200 dark:border-gray-800 flex flex-col overflow-y-auto">
@@ -9372,6 +9474,7 @@ jane@startup.io"
                             </div>
                         )}
                     </div>
+                </div>
                 </div>
             );
         }

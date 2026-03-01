@@ -2010,7 +2010,7 @@ Category:`
         const user = db.data.users.find(u => u.id === req.userId);
         const emailSettings = db.data.email_settings.find(s => s.user_id === req.userId);
 
-        const shouldAutoSend = user && user.auto_mode_enabled && lead.auto_send_enabled !== false;
+        const shouldAutoSend = user && user.auto_mode_enabled && !user.auto_mode_paused && lead.auto_send_enabled !== false;
         const alreadySentHolding = (lead.clarification_count || 0) >= 1;
 
         if (shouldAutoSend && clarification_needed && alreadySentHolding) {
@@ -5614,6 +5614,13 @@ async function processSequenceSteps() {
 
   for (const lead of enrolledLeads) {
     try {
+      // Check if user has emergency paused auto-mode
+      const leadUser = (db.data.users || []).find(u => u.id === lead.user_id);
+      if (leadUser && leadUser.auto_mode_paused === true) {
+        console.log(`⏸️  Auto-mode paused for user ${lead.user_id} — skipping sequence step for ${lead.email}`);
+        continue;
+      }
+
       const seqId = lead.enrolled_sequence_id;
       const sequence = (db.data.sequences || []).find(s => s.id === seqId);
       if (!sequence || !sequence.is_active) continue;
