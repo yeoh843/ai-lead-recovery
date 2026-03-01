@@ -4621,18 +4621,21 @@ jane@startup.io"
                 }
 
                 try {
-                    const [emailResponse, rulesResponse, automationResponse] = await Promise.all([
+                    const [emailResponse, rulesResponse, automationResponse, autoModeResponse] = await Promise.all([
                         fetch(`${API_URL}/api/settings/email`, { headers: { 'Authorization': `Bearer ${token}` } }),
                         fetch(`${API_URL}/api/settings/follow-up-rules`, { headers: { 'Authorization': `Bearer ${token}` } }),
-                        fetch(`${API_URL}/api/settings/automation`, { headers: { 'Authorization': `Bearer ${token}` } })
+                        fetch(`${API_URL}/api/settings/automation`, { headers: { 'Authorization': `Bearer ${token}` } }),
+                        fetch(`${API_URL}/api/settings/auto-mode`, { headers: { 'Authorization': `Bearer ${token}` } })
                     ]);
                     const emailData = emailResponse.ok ? await emailResponse.json() : {};
                     const rulesData = rulesResponse.ok ? await rulesResponse.json() : {};
                     const automationData = automationResponse.ok ? await automationResponse.json() : {};
+                    const autoModeData = autoModeResponse.ok ? await autoModeResponse.json() : {};
                     setEmailSettings(prev => ({
                         ...prev,
                         ...emailData,
-                        intent_settings: rulesData.follow_up_rules || { ...DEFAULT_INTENT_SETTINGS }
+                        intent_settings: rulesData.follow_up_rules || { ...DEFAULT_INTENT_SETTINGS },
+                        auto_mode_paused: autoModeData.auto_mode_paused || false
                     }));
                     if (automationData.business_type) setBusinessType(automationData.business_type);
                     if (automationData.ai_custom_instructions !== undefined) setCustomInstructions(automationData.ai_custom_instructions);
@@ -6246,7 +6249,6 @@ jane@startup.io"
                     if (response.ok) {
                         const data = await response.json();
                         setSendingMode(data.auto_mode_enabled ? 'auto' : 'manual');
-                        setEmailSettings(prev => ({ ...prev, auto_mode_paused: data.auto_mode_paused || false }));
                     }
                 } catch (error) {
                     console.error('Error fetching auto-mode settings:', error);
