@@ -2367,6 +2367,7 @@ app.get('/api/settings/auto-mode', authenticate, async (req, res) => {
   res.json({
     auto_mode_enabled: user.auto_mode_enabled || false,
     auto_mode_include_objections: user.auto_mode_include_objections || false,
+    auto_mode_paused: user.auto_mode_paused || false,
     // Legacy fields for backward compatibility
     email_mode: user.auto_mode_enabled ? 'AUTO' : 'MANUAL',
     auto_send_all: user.auto_mode_enabled || false
@@ -2375,7 +2376,7 @@ app.get('/api/settings/auto-mode', authenticate, async (req, res) => {
 
 // Update Auto Mode Settings (Unified Auto-Send Configuration)
 app.post('/api/settings/auto-mode', authenticate, async (req, res) => {
-  const { auto_mode_enabled, auto_mode_include_objections } = req.body;
+  const { auto_mode_enabled, auto_mode_include_objections, auto_mode_paused } = req.body;
 
   await db.read();
 
@@ -2394,6 +2395,11 @@ app.post('/api/settings/auto-mode', authenticate, async (req, res) => {
     user.auto_mode_include_objections = auto_mode_include_objections;
   }
 
+  // Emergency pause/resume (stops all auto-sends immediately)
+  if (auto_mode_paused !== undefined) {
+    user.auto_mode_paused = auto_mode_paused;
+  }
+
   // Keep legacy fields in sync for backward compatibility
   user.email_mode = user.auto_mode_enabled ? 'AUTO' : 'MANUAL';
   user.auto_send_all = user.auto_mode_enabled || false;
@@ -2406,7 +2412,10 @@ app.post('/api/settings/auto-mode', authenticate, async (req, res) => {
     success: true,
     auto_mode_enabled: user.auto_mode_enabled,
     auto_mode_include_objections: user.auto_mode_include_objections,
-    message: user.auto_mode_enabled ? '✅ Auto Mode enabled - emails will be sent automatically' : '📝 Manual Mode enabled - emails will require approval'
+    auto_mode_paused: user.auto_mode_paused || false,
+    message: user.auto_mode_paused
+      ? '⏸️ Auto-send paused - no more emails will be sent'
+      : (user.auto_mode_enabled ? '✅ Auto Mode enabled - emails will be sent automatically' : '📝 Manual Mode enabled - emails will require approval')
   });
 });
 
@@ -5126,6 +5135,12 @@ async function processFollowUps() {
 
       const followUpRules = user.per_intent_settings || defaultRules;
       const autoModeEnabled = user.auto_mode_enabled || false;
+
+      // Check if user has emergency paused auto-mode
+      if (user.auto_mode_paused === true) {
+        console.log(`⏸️  Auto-mode paused for user ${user.id} — skipping follow-ups`);
+        continue;
+      }
 
       // Find leads that need follow-up
       const userLeads = db.data.leads.filter(l => l.user_id === user.id);

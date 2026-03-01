@@ -4515,7 +4515,8 @@ jane@startup.io"
                 from_name: '',
                 sending_mode: 'manual',
                 transition_mode: 'manual',
-                intent_settings: { ...DEFAULT_INTENT_SETTINGS }
+                intent_settings: { ...DEFAULT_INTENT_SETTINGS },
+                auto_mode_paused: false
             });
             const [loading, setLoading] = useState(true);
             const [saving, setSaving] = useState(false);
@@ -5293,6 +5294,45 @@ jane@startup.io"
                                         </div>
                                     )}
                                 </div>
+
+                                {/* Emergency Pause Button */}
+                                {emailSettings.sending_mode === 'auto' && (
+                                    <div className="mt-4 p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
+                                        <p className="text-sm text-gray-700 dark:text-gray-300 mb-3">
+                                            <strong>⚠️ If emails are sending too fast:</strong>
+                                        </p>
+                                        <button
+                                            onClick={async () => {
+                                                const newPausedState = !emailSettings.auto_mode_paused;
+                                                setEmailSettings({ ...emailSettings, auto_mode_paused: newPausedState });
+                                                if (!isDemoMode && token) {
+                                                    try {
+                                                        const response = await fetch(`${API_URL}/api/settings/auto-mode`, {
+                                                            method: 'POST',
+                                                            headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                                                            body: JSON.stringify({ auto_mode_paused: newPausedState })
+                                                        });
+                                                        if (response.ok) {
+                                                            const data = await response.json();
+                                                            setEmailSettings({ ...emailSettings, auto_mode_paused: newPausedState });
+                                                            alert(data.message);
+                                                        }
+                                                    } catch(e) {
+                                                        alert('Failed to toggle pause: ' + e.message);
+                                                        setEmailSettings({ ...emailSettings, auto_mode_paused: !newPausedState });
+                                                    }
+                                                }
+                                            }}
+                                            className={`w-full px-4 py-3 rounded-lg font-semibold text-white transition-all ${
+                                                emailSettings.auto_mode_paused
+                                                    ? 'bg-green-600 hover:bg-green-700'
+                                                    : 'bg-red-600 hover:bg-red-700'
+                                            }`}
+                                        >
+                                            {emailSettings.auto_mode_paused ? '▶️ Resume Auto-Send' : '⏸️ PAUSE Auto-Send'}
+                                        </button>
+                                    </div>
+                                )}
                             </div>
 
                             {/* Custom AI Instructions */}
@@ -5364,7 +5404,7 @@ jane@startup.io"
                                         value={businessKnowledge}
                                         onChange={e => setBusinessKnowledge(e.target.value)}
                                         rows={5}
-                                        placeholder={"Examples:\n• Unit Type A: 3-bedroom, RM 650,000, 1,200 sqft, freehold\n• Package B includes: 6 months coaching + weekly calls + private group\n• Our refund policy: 30-day money back, no questions asked\n• We serve clients in KL, Selangor, and Penang only"}
+                                        placeholder={"Examples:\n• Unit Type A: 3-bedroom, $450,000, 1,200 sqft, single-family\n• Package B includes: 6 months coaching + weekly calls + private group\n• Our refund policy: 30-day money back, no questions asked\n• We serve clients in Los Angeles, San Francisco, and New York only"}
                                         className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-white text-sm resize-none"
                                     />
                                 </div>
@@ -6206,6 +6246,7 @@ jane@startup.io"
                     if (response.ok) {
                         const data = await response.json();
                         setSendingMode(data.auto_mode_enabled ? 'auto' : 'manual');
+                        setEmailSettings(prev => ({ ...prev, auto_mode_paused: data.auto_mode_paused || false }));
                     }
                 } catch (error) {
                     console.error('Error fetching auto-mode settings:', error);
