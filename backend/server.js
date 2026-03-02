@@ -2339,6 +2339,14 @@ app.post('/api/settings/automation', authenticate, async (req, res) => {
     const userLeads = db.data.leads.filter(l => l.user_id === req.userId);
     userLeads.forEach(l => { l.clarification_count = 0; });
     console.log(`📚 Business knowledge updated — reset clarification count for ${userLeads.length} leads`);
+
+    // If both fields are cleared, also wipe product_profiles so the AI has no residual knowledge
+    const bkEmpty = business_knowledge !== undefined && business_knowledge.trim() === '';
+    const luEmpty = live_updates !== undefined && live_updates.trim() === '';
+    if (bkEmpty && luEmpty) {
+      db.data.product_profiles = db.data.product_profiles.filter(p => p.user_id !== req.userId);
+      console.log(`🗑️  Business knowledge cleared — removed product profile for user ${req.userId}`);
+    }
   }
 
   await db.write();
@@ -4004,7 +4012,6 @@ async function checkGmailReplies(settings, userId) {
           }
 
           const user = db.data.users.find(u => u.id === userId);
-          const isAutoMode = user && user.auto_mode_enabled;
 
           // Safety: never send blank emails
           if (draft && !draft.trim()) {
@@ -4013,7 +4020,7 @@ async function checkGmailReplies(settings, userId) {
           }
 
           if (draft) {
-            const shouldAutoSend = isAutoMode && lead.auto_send_enabled !== false;
+            const shouldAutoSend = user && user.auto_mode_enabled && !user.auto_mode_paused && lead.auto_send_enabled !== false;
 
             // If clarification needed AND we already sent a holding reply before → STOP auto-replying
             const alreadySentHolding = (lead.clarification_count || 0) >= 1;
@@ -4048,6 +4055,22 @@ async function checkGmailReplies(settings, userId) {
             } else if (shouldAutoSend) {
               // AUTO MODE: Send immediately
               try {
+                // Second dedup check: catch race condition where two concurrent checkGmailReplies
+                // both read the DB before either writes to email_threads (though this is rare).
+                // If another process already processed this message, skip sending again.
+                const doubleCheckCount = (db.data.email_threads || [])
+                  .filter(t => t.gmail_message_id === message.id).length;
+                if (doubleCheckCount > 1) {
+                  console.log(`   ⏭️  Message already processed by another concurrent check, skipping send`);
+                  newReplies.push({
+                    lead_id: lead.id,
+                    lead_name: `${lead.first_name} ${lead.last_name}`,
+                    intent: analysis.intent,
+                    duplicate_prevented: true
+                  });
+                  break; // Skip to next message
+                }
+
                 const autoSendResult2 = await sendEmail(settings, lead.email, `Re: ${subject}`, draft, null, {
                   lead_id: lead.id
                 });
@@ -4064,11 +4087,21 @@ async function checkGmailReplies(settings, userId) {
                   sent_at: new Date().toISOString()
                 });
                 console.log(`🚀 AUTO-SENT immediate reply to ${lead.first_name} (Intent: ${analysis.intent})${draftClarificationNeeded2 ? ' [HOLDING REPLY - needs follow-up]' : ''} - Auto Mode enabled`);
-                lead.status = 'replied';
-                lead.last_email_sent_date = new Date().toISOString(); // Reset follow-up timer from this reply
+
+                // Re-find lead via findIndex — generateAIResponse calls db.read() internally
+                // which resets db.data and detaches the old `lead` reference.
+                // Without this, status/last_email_sent_date are written to a ghost object
+                // and processFollowUps sees a stale last_email_sent_date → sends a duplicate.
+                const liveLeadIdx2 = db.data.leads.findIndex(l => l.id === lead.id);
+                if (liveLeadIdx2 !== -1) {
+                  db.data.leads[liveLeadIdx2].status = 'replied';
+                  db.data.leads[liveLeadIdx2].last_email_sent_date = new Date().toISOString(); // Reset follow-up timer from this reply
+                }
 
                 if (draftClarificationNeeded2) {
-                  lead.clarification_count = (lead.clarification_count || 0) + 1;
+                  if (liveLeadIdx2 !== -1) {
+                    db.data.leads[liveLeadIdx2].clarification_count = (db.data.leads[liveLeadIdx2].clarification_count || 0) + 1;
+                  }
                   db.data.ai_drafts.push({
                     id: db.data.ai_drafts.length + 1,
                     lead_id: lead.id,
@@ -4086,7 +4119,9 @@ async function checkGmailReplies(settings, userId) {
                   console.log(`📋 Holding reply sent to ${lead.first_name} — flagged for your follow-up (question not in knowledge base)`);
                 } else {
                   // Normal reply succeeded — reset clarification counter and resolve stale drafts
-                  lead.clarification_count = 0;
+                  if (liveLeadIdx2 !== -1) {
+                    db.data.leads[liveLeadIdx2].clarification_count = 0;
+                  }
                   resolveStaleActionRequiredDrafts(lead.id);
                 }
                 await db.write();
@@ -4517,43 +4552,29 @@ function resolveStaleActionRequiredDrafts(leadId) {
 // AI Response Generation (Using Sonnet - better quality, only for INTERESTED/OBJECTION)
 async function generateAIResponse(lead, originalReply, intent, emailSubject = '') {
 
-  // Load product profile for this user so AI replies are grounded in their real offering
+  // Load user settings for AI context
   await db.read();
-  const productProfile = db.data.product_profiles.find(p => p.user_id === lead.user_id);
   const user = db.data.users.find(u => u.id === lead.user_id);
+  const sellerProfile = db.data.seller_profiles.find(p => p.user_id === lead.user_id);
 
-  // Check if required product fields are filled in
-  const hasProductInfo = productProfile &&
-    (productProfile.product_name || '').trim() &&
-    (productProfile.product_description || '').trim() &&
-    ((productProfile.key_benefits || '').trim() || (productProfile.unique_selling_points || '').trim());
+  // Check if user has set business knowledge
+  const hasBusinessKnowledge = user &&
+    ((user.business_knowledge || '').trim() || (user.live_updates || '').trim());
 
-  // If customer is asking about the product (INTERESTED/OBJECTION) and product info is missing,
+  // If customer is asking about the product (INTERESTED/OBJECTION) and no business knowledge is set,
   // trigger clarification mode — don't make anything up
-  if (!hasProductInfo && (intent === 'INTERESTED' || intent === 'OBJECTION')) {
+  if (!hasBusinessKnowledge && (intent === 'INTERESTED' || intent === 'OBJECTION')) {
     const clarificationBody = `Hi ${lead.first_name},\n\nThank you for your question.\n\nI want to make sure I give you accurate information. Let me confirm the details and get back to you shortly.\n\nBest regards`;
     return { body: clarificationBody, clarification_needed: true };
   }
 
-  const sellerProfile = db.data.seller_profiles.find(p => p.user_id === lead.user_id);
   const sellerContext = getSellerContext(sellerProfile);
-
-  const ctaText = (productProfile?.call_to_action || '').trim();
-  const productContext = productProfile
-    ? `You are a sales rep for the following business (use these for product facts ONLY — do NOT copy any contact details from here):
-Product/Service: ${productProfile.product_name || ''}
-Description: ${productProfile.product_description || ''}
-Key Benefits: ${productProfile.key_benefits || ''}
-Target Audience: ${productProfile.target_audience || ''}
-Unique Selling Points: ${productProfile.unique_selling_points || ''}
-${ctaText ? `Call to Action: ${ctaText}` : ''}
-${productProfile.special_offers ? `Special Offer: ${productProfile.special_offers}` : ''}
-${productProfile.success_stories ? `Success Story: ${productProfile.success_stories}` : ''}`
-    : `You are a helpful sales rep.`;
-
   const businessTypeContext = getBusinessTypeContext(user?.business_type || 'other');
   const businessKnowledgeContext = getBusinessKnowledgeContext(user?.business_knowledge || '', user?.live_updates || '');
   const customInstructionsContext = getCustomInstructionsContext(user?.ai_custom_instructions || '');
+
+  // Single source of truth: business knowledge from textareas
+  const productContext = `You are a helpful sales rep.`;
 
   const subjectContext = emailSubject ? `\nEmail Subject: "${emailSubject}"` : '';
 
@@ -4633,15 +4654,15 @@ Do NOT use placeholder text like [Your Name].`,
       if (!aiBody) {
         console.log(`⚠️  AI returned empty body for lead ${lead.id} (${lead.first_name}) — using holding reply`);
         aiBody = `Hi ${lead.first_name},\n\nThank you for reaching out! That's a great question.\n\nLet me look into this and get back to you with the right information shortly.\n\nBest regards`;
-        // INTERESTED leads with product knowledge should never trigger Action Required
-        return { body: aiBody, clarification_needed: intent === 'INTERESTED' && hasProductInfo ? false : true };
+        // INTERESTED leads with business knowledge should never trigger Action Required
+        return { body: aiBody, clarification_needed: intent === 'INTERESTED' && hasBusinessKnowledge ? false : true };
       }
 
-      // INTERESTED leads with product knowledge should always get a direct reply.
+      // INTERESTED leads with business knowledge should always get a direct reply.
       // Even if the AI added [NEEDS_CLARIFICATION] (e.g. missing a specific price),
       // override it — the AI's reply already shares what it knows and invites a discussion.
-      if (intent === 'INTERESTED' && hasProductInfo && needsClarification) {
-        console.log(`ℹ️  INTERESTED lead with product knowledge — overriding clarification flag (AI will share available info + invite viewing)`);
+      if (intent === 'INTERESTED' && hasBusinessKnowledge && needsClarification) {
+        console.log(`ℹ️  INTERESTED lead with business knowledge — overriding clarification flag (AI will share available info + invite discussion)`);
         needsClarification = false;
       }
 
@@ -4657,8 +4678,7 @@ Do NOT use placeholder text like [Your Name].`,
     console.error('AI generation error:', error);
   }
 
-  // Fallback using product knowledge if AI call fails
-  const cta = productProfile?.call_to_action || 'book a quick call';
+  // Fallback if AI call fails
   if (intent === 'NOT_NOW') {
     return { body: `Hi ${lead.first_name},\n\nNo problem at all — I completely understand timing matters. I'll follow up with you when the time is right.\n\nFeel free to reach out whenever you're ready.\n\nBest regards`, clarification_needed: false };
   }
@@ -4669,9 +4689,9 @@ Do NOT use placeholder text like [Your Name].`,
     if (isRepeatedObjection) {
       return { body: `Hi ${lead.first_name},\n\nI understand — your concern is important. If this is a dealbreaker for you, that's okay. I'm happy to explore alternatives or help you find a better fit.\n\nLet me know how I can help.\n\nBest regards`, clarification_needed: false };
     }
-    return { body: `Hi ${lead.first_name},\n\nI hear your concern. Here's what I think might matter: [brief value point]\n\nWhat's most important to you in this situation?\n\nLooking forward to your thoughts.\n\nBest regards`, clarification_needed: false };
+    return { body: `Hi ${lead.first_name},\n\nI hear your concern. What's most important to you in this situation?\n\nLooking forward to your thoughts.\n\nBest regards`, clarification_needed: false };
   }
-  return { body: `Hi ${lead.first_name},\n\nThank you for getting back to me! I'd love to ${cta} to show you exactly how we can help${lead.company ? ` ${lead.company}` : ''}.\n\nWhen works best for you this week?\n\nBest regards`, clarification_needed: false };
+  return { body: `Hi ${lead.first_name},\n\nThank you for getting back to me! I'd love to chat more about how I can help you.\n\nWhen works best for you?\n\nBest regards`, clarification_needed: false };
 }
 
 /**
