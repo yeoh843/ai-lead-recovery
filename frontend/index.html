@@ -1773,32 +1773,28 @@ STRIPE_PRICE_GROWTH_ANNUAL=price_YOUR_ID_HERE`}</pre>
                 <div className="space-y-6">
 
                     {/* ── EMERGENCY PAUSE BANNER ── */}
-                    {autoModeEnabled && (
-                        <div className={`flex items-center justify-between px-4 py-2 rounded-lg ${
-                            autoModePaused
-                                ? 'bg-yellow-50 dark:bg-yellow-900/30 border border-yellow-300 dark:border-yellow-700'
-                                : 'bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800'
-                        }`}>
-                            <div className="flex items-center gap-2">
-                                <span className="text-sm font-medium">
-                                    {autoModePaused
-                                        ? '⏸️ Auto-send is PAUSED — no emails being sent'
-                                        : '⚡ Auto Mode is active — emails sent based on Follow-Up Rules'}
-                                </span>
-                            </div>
-                            <button
-                                onClick={toggleAutoModePause}
-                                disabled={togglingPause}
-                                className={`px-4 py-1.5 rounded-lg text-sm font-semibold text-white transition-all ${
-                                    autoModePaused
-                                        ? 'bg-green-600 hover:bg-green-700'
-                                        : 'bg-red-600 hover:bg-red-700'
-                                } ${togglingPause ? 'opacity-50' : ''}`}
-                            >
-                                {togglingPause ? '...' : autoModePaused ? '▶️ Resume Auto-Send' : '⏸️ Pause All'}
-                            </button>
-                        </div>
-                    )}
+                    <div className={`flex items-center justify-between px-4 py-2 rounded-lg ${
+                        autoModePaused
+                            ? 'bg-yellow-50 dark:bg-yellow-900/30 border border-yellow-300 dark:border-yellow-700'
+                            : 'bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800'
+                    }`}>
+                        <span className="text-sm font-medium">
+                            {autoModePaused
+                                ? '⏸️ Auto-send is PAUSED — no emails being sent'
+                                : '⚡ Auto Mode active — emails sent based on Follow-Up Rules'}
+                        </span>
+                        <button
+                            onClick={toggleAutoModePause}
+                            disabled={togglingPause}
+                            className={`px-4 py-1.5 rounded-lg text-sm font-semibold text-white transition-all ${
+                                autoModePaused
+                                    ? 'bg-green-600 hover:bg-green-700'
+                                    : 'bg-red-600 hover:bg-red-700'
+                            } ${togglingPause ? 'opacity-50' : ''}`}
+                        >
+                            {togglingPause ? '...' : autoModePaused ? '▶️ Resume Auto-Send' : '⏸️ Pause All'}
+                        </button>
+                    </div>
 
                     <div className="flex justify-between items-center">
                         <h2 className="text-2xl font-bold text-gray-800 dark:text-white">Analytics Dashboard</h2>
@@ -8672,32 +8668,28 @@ jane@startup.io"
                 <div className="flex flex-col h-full">
 
                     {/* ── EMERGENCY PAUSE BANNER ── */}
-                    {autoModeEnabled && (
-                        <div className={`flex items-center justify-between px-4 py-2 border-b ${
-                            autoModePaused
-                                ? 'bg-yellow-50 dark:bg-yellow-900/30 border-yellow-300 dark:border-yellow-700'
-                                : 'bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800'
-                        }`}>
-                            <div className="flex items-center gap-2">
-                                <span className="text-sm font-medium">
-                                    {autoModePaused
-                                        ? '⏸️ Auto-send is PAUSED — no emails being sent'
-                                        : '⚡ Auto Mode is active — emails sent based on Follow-Up Rules'}
-                                </span>
-                            </div>
-                            <button
-                                onClick={toggleAutoModePause}
-                                disabled={togglingPause}
-                                className={`px-4 py-1.5 rounded-lg text-sm font-semibold text-white transition-all ${
-                                    autoModePaused
-                                        ? 'bg-green-600 hover:bg-green-700'
-                                        : 'bg-red-600 hover:bg-red-700'
-                                } ${togglingPause ? 'opacity-50' : ''}`}
-                            >
-                                {togglingPause ? '...' : autoModePaused ? '▶️ Resume Auto-Send' : '⏸️ Pause All'}
-                            </button>
-                        </div>
-                    )}
+                    <div className={`flex items-center justify-between px-4 py-2 border-b ${
+                        autoModePaused
+                            ? 'bg-yellow-50 dark:bg-yellow-900/30 border-yellow-300 dark:border-yellow-700'
+                            : 'bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800'
+                    }`}>
+                        <span className="text-sm font-medium">
+                            {autoModePaused
+                                ? '⏸️ Auto-send is PAUSED — no emails being sent'
+                                : '⚡ Auto Mode active — emails sent based on Follow-Up Rules'}
+                        </span>
+                        <button
+                            onClick={toggleAutoModePause}
+                            disabled={togglingPause}
+                            className={`px-4 py-1.5 rounded-lg text-sm font-semibold text-white transition-all ${
+                                autoModePaused
+                                    ? 'bg-green-600 hover:bg-green-700'
+                                    : 'bg-red-600 hover:bg-red-700'
+                            } ${togglingPause ? 'opacity-50' : ''}`}
+                        >
+                            {togglingPause ? '...' : autoModePaused ? '▶️ Resume Auto-Send' : '⏸️ Pause All'}
+                        </button>
+                    </div>
 
                     <div className="flex flex-1 overflow-hidden border-t border-gray-200 dark:border-gray-800">
 
