@@ -4742,26 +4742,26 @@ jane@startup.io"
                 }
 
                 try {
-                    await Promise.all([
-                        fetch(`${API_URL}/api/settings/email`, {
-                            method: 'POST',
-                            headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ from_name: emailSettings.from_name, sending_mode: emailSettings.sending_mode })
-                        }),
-                        fetch(`${API_URL}/api/settings/follow-up-rules`, {
-                            method: 'POST',
-                            headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                follow_up_rules: emailSettings.intent_settings,
-                                email_mode: emailSettings.sending_mode === 'auto' ? 'AUTO' : 'MANUAL'
-                            })
-                        }),
-                        fetch(`${API_URL}/api/settings/automation`, {
-                            method: 'POST',
-                            headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ ai_custom_instructions: customInstructions, business_knowledge: businessKnowledge, live_updates: liveUpdates })
+                    // Sequential (not parallel) to avoid LowDB race condition:
+                    // concurrent db.read() calls reset each other's in-memory changes
+                    await fetch(`${API_URL}/api/settings/email`, {
+                        method: 'POST',
+                        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ from_name: emailSettings.from_name, sending_mode: emailSettings.sending_mode })
+                    });
+                    await fetch(`${API_URL}/api/settings/follow-up-rules`, {
+                        method: 'POST',
+                        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            follow_up_rules: emailSettings.intent_settings,
+                            email_mode: emailSettings.sending_mode === 'auto' ? 'AUTO' : 'MANUAL'
                         })
-                    ]);
+                    });
+                    await fetch(`${API_URL}/api/settings/automation`, {
+                        method: 'POST',
+                        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ ai_custom_instructions: customInstructions, business_knowledge: businessKnowledge, live_updates: liveUpdates })
+                    });
                     setMessage({ type: 'success', text: 'Settings saved' });
                 } catch (error) {
                     setMessage({ type: 'error', text: 'Failed to save settings' });
@@ -4923,25 +4923,6 @@ jane@startup.io"
                 }
             };
 
-            const clearAllKnowledge = async () => {
-                if (!window.confirm('Clear ALL product knowledge? This will delete your product profile, business knowledge, and live updates. The AI will stop using any previous product info.')) return;
-                try {
-                    const res = await fetch(`${API_URL}/api/settings/product-profile`, {
-                        method: 'DELETE',
-                        headers: { 'Authorization': `Bearer ${token}` }
-                    });
-                    if (res.ok) {
-                        setProductProfile({ product_name: '', product_description: '', key_benefits: '', target_audience: '', pain_points: '', unique_selling_points: '', success_stories: '', special_offers: '', call_to_action: '' });
-                        setBusinessKnowledge('');
-                        setLiveUpdates('');
-                        setMessage({ type: 'success', text: 'All product knowledge cleared. AI will no longer reference previous product info.' });
-                    } else {
-                        setMessage({ type: 'error', text: 'Failed to clear knowledge' });
-                    }
-                } catch (e) {
-                    setMessage({ type: 'error', text: 'Failed to clear knowledge' });
-                }
-            };
 
             // Format extracted product data into bullet-point text for Business Knowledge
             const formatExtractedToKnowledge = (extracted) => {
@@ -5306,15 +5287,8 @@ jane@startup.io"
                                             name="sending_mode"
                                             value="manual"
                                             checked={emailSettings.sending_mode === 'manual'}
-                                            onChange={async (e) => {
-                                                const newMode = e.target.value;
-                                                setEmailSettings({ ...emailSettings, sending_mode: newMode });
-                                                if (!isDemoMode && token) {
-                                                    await Promise.all([
-                                                        fetch(`${API_URL}/api/settings/email`, { method: 'POST', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ from_name: emailSettings.from_name, sending_mode: newMode }) }),
-                                                        fetch(`${API_URL}/api/settings/follow-up-rules`, { method: 'POST', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ follow_up_rules: emailSettings.intent_settings, email_mode: 'MANUAL' }) })
-                                                    ]);
-                                                }
+                                            onChange={(e) => {
+                                                setEmailSettings({ ...emailSettings, sending_mode: e.target.value });
                                             }}
                                             className="sr-only"
                                         />
@@ -5330,15 +5304,8 @@ jane@startup.io"
                                             name="sending_mode"
                                             value="auto"
                                             checked={emailSettings.sending_mode === 'auto'}
-                                            onChange={async (e) => {
-                                                const newMode = e.target.value;
-                                                setEmailSettings({ ...emailSettings, sending_mode: newMode });
-                                                if (!isDemoMode && token) {
-                                                    await Promise.all([
-                                                        fetch(`${API_URL}/api/settings/email`, { method: 'POST', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ from_name: emailSettings.from_name, sending_mode: newMode }) }),
-                                                        fetch(`${API_URL}/api/settings/follow-up-rules`, { method: 'POST', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ follow_up_rules: emailSettings.intent_settings, email_mode: 'AUTO' }) })
-                                                    ]);
-                                                }
+                                            onChange={(e) => {
+                                                setEmailSettings({ ...emailSettings, sending_mode: e.target.value });
                                             }}
                                             className="sr-only"
                                         />
@@ -5601,14 +5568,6 @@ jane@startup.io"
                                     className="w-full px-6 py-4 bg-gradient-to-r from-purple-600 to-blue-600 text-white rounded-lg hover:from-purple-700 hover:to-blue-700 disabled:opacity-50 disabled:cursor-not-allowed font-bold text-lg shadow-lg"
                                 >
                                     {extracting ? '🤖 AI is Learning Your Product...' : '🤖 Let AI Learn My Product'}
-                                </button>
-
-                                {/* Clear All Knowledge Button */}
-                                <button
-                                    onClick={clearAllKnowledge}
-                                    className="w-full mt-3 px-4 py-2 bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400 border border-red-300 dark:border-red-700 rounded-lg hover:bg-red-200 dark:hover:bg-red-900/50 text-sm font-medium"
-                                >
-                                    🗑️ Clear All Product Knowledge
                                 </button>
 
                                 {/* Extraction Success Notice */}
@@ -9423,7 +9382,7 @@ jane@startup.io"
                                                         <p className="text-sm text-gray-700 dark:text-gray-300 font-medium mt-0.5">
                                                             📤 Email sent
                                                             <span className="ml-1.5 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300">
-                                                                🔄 {ev.sequence_name} — Step {ev.step_number}{ev.total_steps > 0 && ` of ${ev.total_steps}`}
+                                                                🤖 Auto-Reply
                                                             </span>
                                                             {ev.subject && <span className="font-normal text-gray-500 dark:text-gray-400"> · {ev.subject}</span>}
                                                         </p>

@@ -4007,8 +4007,19 @@ async function checkGmailReplies(settings, userId) {
               }
             }
           } else {
-            console.log(`⏭️  Draft already exists for this reply from ${lead.first_name} — skipping duplicate generation`);
-            // Skip generating another draft for the same email
+            // Draft already exists — reuse it for auto-send if auto-mode is now active
+            // This fixes the case where a draft was saved while auto-mode was paused,
+            // and later auto-mode is unpaused but the email was never sent.
+            const user2 = db.data.users.find(u => u.id === userId);
+            const shouldAutoSendExisting = user2 && user2.auto_mode_enabled && !user2.auto_mode_paused && lead.auto_send_enabled !== false;
+
+            if (shouldAutoSendExisting && existingDraft.draft_body) {
+              console.log(`📤 Found unsent pending draft for ${lead.first_name} — auto-sending now`);
+              draft = existingDraft.draft_body;
+              draftClarificationNeeded2 = existingDraft.clarification_needed || false;
+            } else {
+              console.log(`⏭️  Draft already exists for this reply from ${lead.first_name} — skipping (auto-mode ${shouldAutoSendExisting ? 'on' : 'off/paused'})`);
+            }
           }
 
           const user = db.data.users.find(u => u.id === userId);
@@ -4087,6 +4098,13 @@ async function checkGmailReplies(settings, userId) {
                   sent_at: new Date().toISOString()
                 });
                 console.log(`🚀 AUTO-SENT immediate reply to ${lead.first_name} (Intent: ${analysis.intent})${draftClarificationNeeded2 ? ' [HOLDING REPLY - needs follow-up]' : ''} - Auto Mode enabled`);
+
+                // Mark the existing pending draft as sent (if we reused one)
+                if (existingDraft) {
+                  existingDraft.status = 'sent';
+                  existingDraft.sent_at = new Date().toISOString();
+                  existingDraft.final_body = draft;
+                }
 
                 // Re-find lead via findIndex — generateAIResponse calls db.read() internally
                 // which resets db.data and detaches the old `lead` reference.
@@ -4560,6 +4578,8 @@ async function generateAIResponse(lead, originalReply, intent, emailSubject = ''
   // Check if user has set business knowledge
   const hasBusinessKnowledge = user &&
     ((user.business_knowledge || '').trim() || (user.live_updates || '').trim());
+
+  console.log(`[generateAIResponse] lead.user_id=${lead.user_id} user=${user ? user.id : 'NOT FOUND'} intent=${intent} hasBusinessKnowledge=${!!hasBusinessKnowledge} bk_len=${(user?.business_knowledge || '').length} lu_len=${(user?.live_updates || '').length}`);
 
   // If customer is asking about the product (INTERESTED/OBJECTION) and no business knowledge is set,
   // trigger clarification mode — don't make anything up
