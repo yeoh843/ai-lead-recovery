@@ -1390,27 +1390,8 @@ app.post('/api/leads/:id/generate-initial-email', authenticate, async (req, res)
   }
 
   try {
-    // Get product profile for context
-    const productProfile = db.data.product_profiles.find(p => p.user_id === req.userId);
     const sellerProfile = db.data.seller_profiles.find(p => p.user_id === req.userId);
     const userRecord = db.data.users.find(u => u.id === req.userId);
-
-    // Build product context for AI
-    let productContext = '';
-    if (productProfile) {
-      productContext = `
-
-YOUR PRODUCT/SERVICE INFORMATION (for benefits and features ONLY — do NOT use any contact details from this section):
-- Product: ${productProfile.product_name || 'Your Product'}
-- Description: ${productProfile.product_description || 'A valuable solution'}
-- Key Benefits: ${productProfile.key_benefits || 'Helps solve important problems'}
-- Target Audience: ${productProfile.target_audience || 'Businesses like theirs'}
-- Pain Points We Solve: ${productProfile.pain_points || 'Common challenges'}
-- Unique Selling Points: ${productProfile.unique_selling_points || 'What makes us different'}
-${productProfile.success_stories ? `- Success Stories: ${productProfile.success_stories}` : ''}
-${productProfile.special_offers ? `- Special Offer: ${productProfile.special_offers}` : ''}
-- Call-to-Action: ${productProfile.call_to_action || 'Schedule a quick call to learn more'}`;
-    }
 
     const sellerContext = getSellerContext(sellerProfile);
     const businessTypeContext = getBusinessTypeContext(userRecord?.business_type || 'other');
@@ -1436,7 +1417,7 @@ Lead details:
 - Name: ${lead.first_name} ${lead.last_name}
 - Company: ${lead.company || 'their company'}
 - Email: ${lead.email}
-${productContext}${sellerContext}${businessTypeContext ? '\n\n' + businessTypeContext : ''}${businessKnowledgeContext ? '\n\n' + businessKnowledgeContext : ''}${customInstructionsContext ? '\n\n' + customInstructionsContext : ''}${SELLER_GUARDRAIL}
+${sellerContext}${businessTypeContext ? '\n\n' + businessTypeContext : ''}${businessKnowledgeContext ? '\n\n' + businessKnowledgeContext : ''}${customInstructionsContext ? '\n\n' + customInstructionsContext : ''}${SELLER_GUARDRAIL}
 
 Write a compelling email that:
 1. Introduces yourself and your product briefly
@@ -1503,28 +1484,11 @@ app.post('/api/leads/:id/generate-email-content', authenticate, async (req, res)
   }
 
   try {
-    // Get product and seller profiles for context
-    const productProfile = db.data.product_profiles.find(p => p.user_id === req.userId);
     const sellerProfile = db.data.seller_profiles.find(p => p.user_id === req.userId);
-
-    // Build product context for AI
-    let productContext = '';
-    if (productProfile) {
-      productContext = `
-
-YOUR PRODUCT/SERVICE INFORMATION (for benefits and features ONLY — do NOT use any contact details from this section):
-- Product: ${productProfile.product_name || 'Your Product'}
-- Description: ${productProfile.product_description || 'A valuable solution'}
-- Key Benefits: ${productProfile.key_benefits || 'Helps solve important problems'}
-- Target Audience: ${productProfile.target_audience || 'Businesses like theirs'}
-- Pain Points We Solve: ${productProfile.pain_points || 'Common challenges'}
-- Unique Selling Points: ${productProfile.unique_selling_points || 'What makes us different'}
-${productProfile.success_stories ? `- Success Stories: ${productProfile.success_stories}` : ''}
-${productProfile.special_offers ? `- Special Offer: ${productProfile.special_offers}` : ''}
-- Call-to-Action: ${productProfile.call_to_action || 'Schedule a quick call to learn more'}`;
-    }
+    const userRecord = db.data.users.find(u => u.id === req.userId);
 
     const sellerContext = getSellerContext(sellerProfile);
+    const businessKnowledgeContext = getBusinessKnowledgeContext(userRecord?.business_knowledge || '', userRecord?.live_updates || '');
 
     // Generate only the middle content (context, main message, CTA) using AI
     const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -1545,7 +1509,7 @@ Lead details:
 - Name: ${lead.first_name} ${lead.last_name}
 - Company: ${lead.company || 'their company'}
 - Email: ${lead.email}
-${productContext}${sellerContext}${SELLER_GUARDRAIL}
+${sellerContext}${businessKnowledgeContext ? '\n\n' + businessKnowledgeContext : ''}${SELLER_GUARDRAIL}
 
 Generate these three sections:
 
@@ -5380,7 +5344,6 @@ async function processFollowUps() {
 async function generateFollowUpEmail(lead, attemptNumber, intent, userId) {
   try {
     await db.read();
-    const productProfile = db.data.product_profiles.find(p => p.user_id === userId);
     const sellerProfile = db.data.seller_profiles.find(p => p.user_id === userId);
     const userRecord = db.data.users.find(u => u.id === userId);
 
@@ -5388,19 +5351,6 @@ async function generateFollowUpEmail(lead, attemptNumber, intent, userId) {
     const businessTypeContext = getBusinessTypeContext(userRecord?.business_type || 'other');
     const businessKnowledgeContext = getBusinessKnowledgeContext(userRecord?.business_knowledge || '', userRecord?.live_updates || '');
     const customInstructionsContext = getCustomInstructionsContext(userRecord?.ai_custom_instructions || '');
-
-    let productContext = '';
-    if (productProfile) {
-      productContext = `
-YOUR PRODUCT/SERVICE INFO:
-- Product: ${productProfile.product_name || ''}
-- Description: ${productProfile.product_description || ''}
-- Key Benefits: ${productProfile.key_benefits || ''}
-- Unique Value: ${productProfile.unique_selling_points || ''}
-${productProfile.special_offers ? `- Special Offer: ${productProfile.special_offers}` : ''}
-- Target Audience: ${productProfile.target_audience || ''}
-- CTA: ${productProfile.call_to_action || 'Schedule a call'}`;
-    }
 
     // ── A/B TESTING: Determine which style variant to use ──────────────────
     // Variant A = Direct & Short (punchy, question-based, max 60 words)
@@ -5439,7 +5389,7 @@ ${winningEmails.map((w, i) => `Example ${i + 1}: "${w.body.substring(0, 200)}${w
 
     const sharedContext = `Lead: ${lead.first_name} ${lead.last_name}${lead.company ? ' at ' + lead.company : ''}
 Follow-up attempt: #${attemptNumber}
-${productContext}${sellerContext}${businessTypeContext ? '\n\n' + businessTypeContext : ''}${businessKnowledgeContext ? '\n\n' + businessKnowledgeContext : ''}${customInstructionsContext ? '\n\n' + customInstructionsContext : ''}${winningContext}`;
+${sellerContext}${businessTypeContext ? '\n\n' + businessTypeContext : ''}${businessKnowledgeContext ? '\n\n' + businessKnowledgeContext : ''}${customInstructionsContext ? '\n\n' + customInstructionsContext : ''}${winningContext}`;
 
     const outputRule = `\nIMPORTANT: Output ONLY the email body. Do NOT include a subject line. Start directly with the greeting (e.g. "Hi ${lead.first_name},"). Do NOT use placeholder text like [Your Name] — use the sender info provided above.\n\n${variantInstruction}\n\nEmail:`;
 
