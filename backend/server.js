@@ -3971,16 +3971,27 @@ async function checkGmailReplies(settings, userId) {
               }
             }
           } else {
-            // Draft already exists — reuse it for auto-send if auto-mode is now active
-            // This fixes the case where a draft was saved while auto-mode was paused,
-            // and later auto-mode is unpaused but the email was never sent.
+            // Draft already exists for this email — check if it's a stale holding reply
+            // If so, regenerate so the AI can now use updated business knowledge.
+            // Only reuse if it's a normal (non-holding) pending draft.
             const user2 = db.data.users.find(u => u.id === userId);
             const shouldAutoSendExisting = user2 && user2.auto_mode_enabled && !user2.auto_mode_paused && lead.auto_send_enabled !== false;
 
-            if (shouldAutoSendExisting && existingDraft.draft_body) {
+            if (shouldAutoSendExisting && existingDraft.draft_body && !existingDraft.clarification_needed) {
+              // Reuse a valid (non-holding) pending draft that was blocked by pause
               console.log(`📤 Found unsent pending draft for ${lead.first_name} — auto-sending now`);
               draft = existingDraft.draft_body;
-              draftClarificationNeeded2 = existingDraft.clarification_needed || false;
+              draftClarificationNeeded2 = false;
+            } else if (existingDraft.clarification_needed) {
+              // Existing draft was a holding reply — regenerate so AI can use current knowledge
+              console.log(`🔄 Existing draft for ${lead.first_name} was a holding reply — regenerating with current knowledge`);
+              // Mark the stale holding draft as resolved so it clears from Action Required
+              existingDraft.status = 'resolved';
+              const aiResult2 = await generateAIResponse(lead, emailBody, analysis.intent, subject);
+              if (aiResult2) {
+                draft = aiResult2.body;
+                draftClarificationNeeded2 = aiResult2.clarification_needed || false;
+              }
             } else {
               console.log(`⏭️  Draft already exists for this reply from ${lead.first_name} — skipping (auto-mode ${shouldAutoSendExisting ? 'on' : 'off/paused'})`);
             }
@@ -4084,20 +4095,28 @@ async function checkGmailReplies(settings, userId) {
                   if (liveLeadIdx2 !== -1) {
                     db.data.leads[liveLeadIdx2].clarification_count = (db.data.leads[liveLeadIdx2].clarification_count || 0) + 1;
                   }
-                  db.data.ai_drafts.push({
-                    id: db.data.ai_drafts.length + 1,
-                    lead_id: lead.id,
-                    user_id: userId,
-                    draft_body: draft,
-                    ai_intent: analysis.intent,
-                    reply_text: emailBody,
-                    reply_subject: subject || '',
-                    status: 'sent',
-                    clarification_needed: true,
-                    needs_follow_up: true,
-                    created_at: new Date().toISOString(),
-                    sent_at: new Date().toISOString()
-                  });
+                  // Only push a new draft record if we didn't already update an existing one
+                  // (avoids duplicate Action Required entries)
+                  if (!existingDraft) {
+                    db.data.ai_drafts.push({
+                      id: db.data.ai_drafts.length + 1,
+                      lead_id: lead.id,
+                      user_id: userId,
+                      draft_body: draft,
+                      ai_intent: analysis.intent,
+                      reply_text: emailBody,
+                      reply_subject: subject || '',
+                      status: 'sent',
+                      clarification_needed: true,
+                      needs_follow_up: true,
+                      created_at: new Date().toISOString(),
+                      sent_at: new Date().toISOString()
+                    });
+                  } else {
+                    // Update existing draft with needs_follow_up flag instead of creating a duplicate
+                    existingDraft.needs_follow_up = true;
+                    existingDraft.sent_at = new Date().toISOString();
+                  }
                   console.log(`📋 Holding reply sent to ${lead.first_name} — flagged for your follow-up (question not in knowledge base)`);
                 } else {
                   // Normal reply succeeded — reset clarification counter and resolve stale drafts
