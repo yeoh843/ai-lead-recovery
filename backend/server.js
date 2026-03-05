@@ -77,8 +77,13 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 // Serve frontend static files (must be BEFORE the URL rewrite middleware below)
 app.use(express.static(path.join(__dirname, '../frontend')));
 
+// Public landing page at root
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, '../frontend', 'landing.html'));
+});
+
 // Serve index.html for SPA client-side routes (before URL rewrite so they don't get mangled)
-['/settings', '/inbox-hub', '/inbox', '/emails', '/reviews', '/sequences', '/templates', '/billing', '/appointments'].forEach(route => {
+['/app', '/settings', '/inbox-hub', '/inbox', '/emails', '/reviews', '/sequences', '/templates', '/billing', '/appointments'].forEach(route => {
   app.get(route, (req, res) => {
     res.sendFile(path.join(__dirname, '../frontend', 'index.html'));
   });
