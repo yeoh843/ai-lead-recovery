@@ -3799,7 +3799,6 @@ async function checkGmailReplies(settings, userId) {
         }
 
         // Find matching lead
-        await db.read();
         const lead = db.data.leads.find(l =>
           l.user_id === userId &&
           l.email.toLowerCase() === fromEmail.toLowerCase()
