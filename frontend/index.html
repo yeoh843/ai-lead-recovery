@@ -1790,7 +1790,7 @@ STRIPE_PRICE_GROWTH_ANNUAL=price_YOUR_ID_HERE`}</pre>
                             ? 'bg-yellow-50 dark:bg-yellow-900/30 border border-yellow-300 dark:border-yellow-700'
                             : 'bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800'
                     }`}>
-                        <span className="text-sm font-medium">
+                        <span className={`text-sm font-medium ${autoModePaused ? 'text-yellow-800 dark:text-yellow-200' : 'text-green-800 dark:text-green-200'}`}>
                             {autoModePaused
                                 ? '⏸️ Auto-send is PAUSED — no emails being sent'
                                 : '⚡ Auto Mode active — emails sent based on Follow-Up Rules'}
@@ -8644,7 +8644,7 @@ jane@startup.io"
                             ? 'bg-yellow-50 dark:bg-yellow-900/30 border-yellow-300 dark:border-yellow-700'
                             : 'bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800'
                     }`}>
-                        <span className="text-sm font-medium">
+                        <span className={`text-sm font-medium ${autoModePaused ? 'text-yellow-800 dark:text-yellow-200' : 'text-green-800 dark:text-green-200'}`}>
                             {autoModePaused
                                 ? '⏸️ Auto-send is PAUSED — no emails being sent'
                                 : '⚡ Auto Mode active — emails sent based on Follow-Up Rules'}
