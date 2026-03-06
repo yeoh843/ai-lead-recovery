@@ -781,36 +781,22 @@ STRIPE_PRICE_GROWTH_ANNUAL=price_YOUR_ID_HERE`}</pre>
                             } else if (msg.type === 'SW_REMINDER') {
                                 // Upcoming reminder from SW — show in-app toast + sound
                                 // Dedup: skip if the page already handled this reminder
-                                const { reminderType, apt = {}, minsUntil, hoursUntil, leadName = 'Lead', timeLabel = '' } = msg;
+                                const { reminderType, apt = {}, minsUntil = 0, leadName = 'Lead', timeLabel = '', label = '', isUrgent = false } = msg;
                                 const swKey = `${apt.id}-${reminderType}`;
                                 if (shownRemindersRef.current.has(swKey)) return;
                                 shownRemindersRef.current.add(swKey);
                                 localStorage.setItem('ztm-shown-reminders', JSON.stringify(Array.from(shownRemindersRef.current)));
 
+                                const displayLabel = label || (minsUntil <= 0 ? 'Starting NOW!' : `in ${minsUntil} min`);
+                                const emoji = minsUntil <= 0 ? '🔴' : isUrgent ? '🟡' : '⏰';
                                 const toastId = `sw-reminder-${reminderType}-${apt.id}-${Date.now()}`;
-                                if (reminderType === '15m') {
-                                    const label = minsUntil <= 0 ? 'Starting NOW!' : `in ${minsUntil} min!`;
-                                    setToastNotifications(prev => [...prev, {
-                                        id: toastId, type: 'appointment_reminder', urgent: true,
-                                        emoji: '🔴', lead_name: `Appointment ${label}`,
-                                        lead_company: leadName, body: timeLabel
-                                    }]);
-                                    setTimeout(() => setToastNotifications(prev => prev.filter(t => t.id !== toastId)), 60000);
-                                } else if (reminderType === '1h') {
-                                    setToastNotifications(prev => [...prev, {
-                                        id: toastId, type: 'appointment_reminder', urgent: false,
-                                        emoji: '🟡', lead_name: `Appointment in ${minsUntil} min — prepare!`,
-                                        lead_company: leadName, body: timeLabel
-                                    }]);
-                                    setTimeout(() => setToastNotifications(prev => prev.filter(t => t.id !== toastId)), 20000);
-                                } else {
-                                    setToastNotifications(prev => [...prev, {
-                                        id: toastId, type: 'appointment_reminder', urgent: false,
-                                        emoji: '⏰', lead_name: `Appointment in ${hoursUntil}h`,
-                                        lead_company: leadName, body: timeLabel
-                                    }]);
-                                    setTimeout(() => setToastNotifications(prev => prev.filter(t => t.id !== toastId)), 15000);
-                                }
+                                setToastNotifications(prev => [...prev, {
+                                    id: toastId, type: 'appointment_reminder', urgent: isUrgent,
+                                    emoji, lead_name: `Appointment in ${displayLabel}`,
+                                    lead_company: leadName, body: timeLabel
+                                }]);
+                                setTimeout(() => setToastNotifications(prev => prev.filter(t => t.id !== toastId)),
+                                    isUrgent ? 60000 : 20000);
                                 playNotificationSound();
 
                             } else if (msg.type === 'NOTIFICATION_CLICKED') {
@@ -1153,7 +1139,7 @@ STRIPE_PRICE_GROWTH_ANNUAL=price_YOUR_ID_HERE`}</pre>
                         }
 
                         // ── Tier 1: 24-hour heads-up ──
-                        const key24h = `${apt.id}-24h`;
+                        const key24h = `${apt.id}-1440m`; // matches SW key for 1440-min (24h) rule
                         if (minsUntil > 60 && minsUntil <= 1440 && !shownRemindersRef.current.has(key24h)) {
                             shownRemindersRef.current.add(key24h);
                             localStorage.setItem('ztm-shown-reminders', JSON.stringify(Array.from(shownRemindersRef.current)));
@@ -1178,7 +1164,7 @@ STRIPE_PRICE_GROWTH_ANNUAL=price_YOUR_ID_HERE`}</pre>
                         }
 
                         // ── Tier 2: 1-hour "prepare now" reminder ──
-                        const key1h = `${apt.id}-1h`;
+                        const key1h = `${apt.id}-60m`; // matches SW key for 60-min rule
                         if (minsUntil > 15 && minsUntil <= 60 && !shownRemindersRef.current.has(key1h)) {
                             shownRemindersRef.current.add(key1h);
                             localStorage.setItem('ztm-shown-reminders', JSON.stringify(Array.from(shownRemindersRef.current)));

@@ -200,32 +200,37 @@ async function checkUpcomingReminders() {
                         ? `${rule.value} day${rule.value !== 1 ? 's' : ''}`
                         : rule.unit === 'hours'
                         ? `${rule.value} hour${rule.value !== 1 ? 's' : ''}`
-                        : rule.value <= 0
+                        : minsUntil <= 0
                         ? 'Starting NOW'
                         : `${rule.value} min`;
 
                     const isUrgent = rule.minutes <= 30;
                     const icon = minsUntil <= 0 ? '🔴' : isUrgent ? '🟡' : '⏰';
 
-                    if (!appOpen) {
-                        await self.registration.showNotification(
-                            minsUntil <= 0
-                                ? `🔴 Appointment starting NOW!`
-                                : `${icon} Appointment in ${label}`,
-                            {
-                                body:               `${leadName} · ${timeLabel} • Click to view`,
-                                icon:               '/favicon.ico',
-                                badge:              '/favicon.ico',
-                                tag:                `apt-${apt.id}-${rule.minutes}m`,
-                                requireInteraction: isUrgent,
-                                vibrate:            isUrgent ? [300, 100, 300, 100, 300] : [200, 100, 200],
-                                data:               { url: '/appointments', type: `reminder_${rule.minutes}m`, aptId: apt.id }
-                            }
-                        );
-                    }
+                    // ALWAYS show the OS notification — regardless of whether the app tab is open.
+                    // Without this, users on Facebook/YouTube with ZTM open in a background tab
+                    // never see the PC corner notification since the broadcast only reaches the
+                    // hidden ZTM tab they're not looking at.
+                    await self.registration.showNotification(
+                        minsUntil <= 0
+                            ? `🔴 Appointment starting NOW!`
+                            : `${icon} Appointment in ${label}`,
+                        {
+                            body:               `${leadName} · ${timeLabel} • Click to view`,
+                            icon:               '/favicon.ico',
+                            badge:              '/favicon.ico',
+                            tag:                `apt-${apt.id}-${rule.minutes}m`,
+                            requireInteraction: isUrgent,
+                            vibrate:            isUrgent ? [300, 100, 300, 100, 300] : [200, 100, 200],
+                            silent:             false, // always play system notification sound
+                            data:               { url: '/appointments', type: `reminder_${rule.minutes}m`, aptId: apt.id }
+                        }
+                    );
+
+                    // Also broadcast to any open page clients (in-app toast + Web Audio ding)
                     await broadcastToClients({
                         type: 'SW_REMINDER', reminderType: `${rule.minutes}m`,
-                        apt, minsUntil, leadName, timeLabel, label
+                        apt, minsUntil, leadName, timeLabel, label, isUrgent
                     });
                 }
             }
