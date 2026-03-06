@@ -6004,7 +6004,7 @@ app.post('/api/webhooks/stripe',
 
 // POST /api/appointments — book appointment for an interested lead
 app.post('/api/appointments', authenticate, async (req, res) => {
-  const { lead_id, date, time, timezone, duration_minutes, meeting_link, notes } = req.body;
+  const { lead_id, date, time, timezone, duration_minutes, appointment_type, meeting_link, notes } = req.body;
   if (!lead_id || !date || !time) {
     return res.status(400).json({ error: 'lead_id, date, and time are required' });
   }
@@ -6021,6 +6021,7 @@ app.post('/api/appointments', authenticate, async (req, res) => {
     time,
     timezone: timezone || 'UTC',
     duration_minutes: duration_minutes || 30,
+    appointment_type: appointment_type || 'call',
     meeting_link: meeting_link || '',
     notes: notes || '',
     status: 'scheduled',

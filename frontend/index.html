@@ -202,6 +202,45 @@
             return new Date(yr, mo - 1, dy, hr, mn, 0);
         };
 
+        // Parse "YYYY-MM-DD" + "HH:MM" in a SPECIFIC IANA timezone (e.g. "Asia/Kuala_Lumpur").
+        // Returns the correct UTC moment so countdown timers and alerts are accurate regardless
+        // of the browser's own timezone.
+        const parseInTimezone = (date, time, tz) => {
+            if (!date) return new Date(NaN);
+            if (!tz || tz === 'UTC' || tz === 'local') {
+                const [yr, mo, dy] = date.split('-').map(Number);
+                const [hr, mn] = (time || '0:00').split(':').map(Number);
+                return tz === 'UTC'
+                    ? new Date(Date.UTC(yr, mo - 1, dy, hr, mn, 0))
+                    : new Date(yr, mo - 1, dy, hr, mn, 0);
+            }
+            try {
+                // Trick: treat the desired date+time as a fake UTC value, then
+                // see how that UTC moment appears in the target timezone, compute the
+                // drift, and shift back so the result IS that local time in the TZ.
+                const [yr, mo, dy] = date.split('-').map(Number);
+                const [hr, mn] = (time || '0:00').split(':').map(Number);
+                const ref = new Date(Date.UTC(yr, mo - 1, dy, hr, mn, 0)); // fake UTC
+
+                const parts = new Intl.DateTimeFormat('en-US', {
+                    timeZone: tz,
+                    year: 'numeric', month: '2-digit', day: '2-digit',
+                    hour: '2-digit', minute: '2-digit', hour12: false
+                }).formatToParts(ref);
+                const p = Object.fromEntries(parts.map(x => [x.type, x.value]));
+                const tzH = p.hour === '24' ? 0 : +p.hour; // 24:00 edge case
+
+                const desiredMs = Date.UTC(yr, mo - 1, dy, hr, mn);
+                const tzShowsMs = Date.UTC(+p.year, +p.month - 1, +p.day, tzH, +p.minute);
+                return new Date(ref.getTime() + (desiredMs - tzShowsMs));
+            } catch (e) {
+                // Fallback to local time if timezone string is invalid
+                const [yr, mo, dy] = date.split('-').map(Number);
+                const [hr, mn] = (time || '0:00').split(':').map(Number);
+                return new Date(yr, mo - 1, dy, hr, mn, 0);
+            }
+        };
+
         // Demo data for offline mode
         const DEMO_DATA = {
             user: { id: 1, email: 'demo@example.com', company_name: 'Demo Company' },
@@ -1091,7 +1130,7 @@ STRIPE_PRICE_GROWTH_ANNUAL=price_YOUR_ID_HERE`}</pre>
 
                     (data.appointments || []).forEach(apt => {
                         if (apt.status !== 'scheduled' || !apt.date || !apt.time) return;
-                        const aptTime = parseLocalDateTime(apt.date, apt.time).getTime();
+                        const aptTime = parseInTimezone(apt.date, apt.time, apt.timezone).getTime();
                         // Allow up to 2 minutes past the appointment time (handles polling gaps)
                         if (isNaN(aptTime) || aptTime < now - 2 * 60 * 1000) return;
                         const minsUntil = Math.round((aptTime - now) / 60000);
@@ -1959,7 +1998,7 @@ STRIPE_PRICE_GROWTH_ANNUAL=price_YOUR_ID_HERE`}</pre>
                             </div>
                             <div className="space-y-2">
                                 {analytics.upcoming_appointments.slice(0, 3).map(apt => {
-                                    const aptDate = apt.date && apt.time ? parseLocalDateTime(apt.date, apt.time) : null;
+                                    const aptDate = apt.date && apt.time ? parseInTimezone(apt.date, apt.time, apt.timezone) : null;
                                     const isPast = aptDate && aptDate < new Date();
                                     const leadName = apt.lead ? `${apt.lead.first_name || ''} ${apt.lead.last_name || ''}`.trim() || apt.lead.email : 'Unknown';
                                     const typeLabel = { call: 'Call', meeting: 'Meeting', video_call: 'Video Call', property_showing: 'Showing', demo: 'Demo', other: 'Appointment' };
@@ -9447,6 +9486,7 @@ jane@startup.io"
             const [appointments, setAppointments] = React.useState([]);
             const [leads, setLeads] = React.useState([]);
             const [loading, setLoading] = React.useState(true);
+            const [leadsLoading, setLeadsLoading] = React.useState(true);
             const [filter, setFilter] = React.useState('active'); // default: hide cancelled
             const [showCancelled, setShowCancelled] = React.useState(false);
             const [saving, setSaving] = React.useState(false);
@@ -9469,6 +9509,52 @@ jane@startup.io"
                 ['call','📞 Call'],['meeting','🤝 Meeting'],['video_call','📹 Video Call'],
                 ['property_showing','🏠 Property Showing'],['demo','💻 Demo'],['other','📅 Other']
             ];
+
+            const TIMEZONE_OPTIONS = [
+                ['UTC','UTC (Coordinated Universal Time)'],
+                ['America/New_York','Eastern Time — New York (ET)'],
+                ['America/Chicago','Central Time — Chicago (CT)'],
+                ['America/Denver','Mountain Time — Denver (MT)'],
+                ['America/Los_Angeles','Pacific Time — Los Angeles (PT)'],
+                ['America/Anchorage','Alaska Time (AKT)'],
+                ['Pacific/Honolulu','Hawaii Time (HST)'],
+                ['America/Toronto','Eastern Time — Toronto (ET)'],
+                ['America/Vancouver','Pacific Time — Vancouver (PT)'],
+                ['America/Sao_Paulo','Brazil — São Paulo (BRT)'],
+                ['Europe/London','London (GMT/BST)'],
+                ['Europe/Paris','Paris / Central Europe (CET)'],
+                ['Europe/Berlin','Berlin (CET)'],
+                ['Europe/Amsterdam','Amsterdam (CET)'],
+                ['Europe/Rome','Rome (CET)'],
+                ['Europe/Madrid','Madrid (CET)'],
+                ['Europe/Moscow','Moscow (MSK)'],
+                ['Europe/Istanbul','Istanbul (TRT)'],
+                ['Africa/Cairo','Cairo (EET)'],
+                ['Africa/Johannesburg','Johannesburg (SAST)'],
+                ['Asia/Dubai','Dubai (GST)'],
+                ['Asia/Riyadh','Riyadh (AST)'],
+                ['Asia/Karachi','Pakistan — Karachi (PKT)'],
+                ['Asia/Kolkata','India — Mumbai / Delhi (IST)'],
+                ['Asia/Dhaka','Bangladesh — Dhaka (BST)'],
+                ['Asia/Bangkok','Bangkok / Jakarta (ICT)'],
+                ['Asia/Kuala_Lumpur','Kuala Lumpur (MYT)'],
+                ['Asia/Singapore','Singapore (SGT)'],
+                ['Asia/Hong_Kong','Hong Kong (HKT)'],
+                ['Asia/Shanghai','China — Beijing / Shanghai (CST)'],
+                ['Asia/Tokyo','Japan — Tokyo (JST)'],
+                ['Asia/Seoul','South Korea — Seoul (KST)'],
+                ['Australia/Perth','Australia — Perth (AWST)'],
+                ['Australia/Sydney','Australia — Sydney (AEST)'],
+                ['Pacific/Auckland','New Zealand — Auckland (NZST)'],
+            ];
+
+            // Reusable timezone select
+            const TimezoneSelect = ({ value, onChange, className }) => (
+                <select value={value} onChange={e => onChange(e.target.value)}
+                    className={className || 'w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm'}>
+                    {TIMEZONE_OPTIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                </select>
+            );
             const typeLabel = Object.fromEntries(TYPE_OPTIONS.map(([v,l]) => [v, l]));
             const statusColors = {
                 scheduled: 'bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300',
@@ -9486,11 +9572,12 @@ jane@startup.io"
             };
 
             const fetchLeads = async () => {
-                if (isDemoMode || !token) return;
+                if (isDemoMode || !token) { setLeadsLoading(false); return; }
                 try {
                     const res = await fetch(`${API_URL}/api/leads`, { headers: { 'Authorization': `Bearer ${token}` } });
                     if (res.ok) { const d = await res.json(); setLeads(d.leads || []); }
                 } catch (e) { console.error('Leads fetch error:', e); }
+                finally { setLeadsLoading(false); }
             };
 
             React.useEffect(() => {
@@ -9504,9 +9591,9 @@ jane@startup.io"
                 const h24 = 24 * 60 * 60 * 1000;
                 return appointments.filter(a => {
                     if (a.status !== 'scheduled' || !a.date || !a.time) return false;
-                    const t = parseLocalDateTime(a.date, a.time).getTime();
+                    const t = parseInTimezone(a.date, a.time, a.timezone).getTime();
                     return !isNaN(t) && t > now && t - now <= h24;
-                }).sort((a, b) => parseLocalDateTime(a.date, a.time) - parseLocalDateTime(b.date, b.time));
+                }).sort((a, b) => parseInTimezone(a.date, a.time, a.timezone) - parseInTimezone(b.date, b.time, b.timezone));
             }, [appointments]);
 
             const upcomingIn1h = React.useMemo(() => {
@@ -9514,14 +9601,16 @@ jane@startup.io"
                 const h1 = 60 * 60 * 1000;
                 return appointments.filter(a => {
                     if (a.status !== 'scheduled' || !a.date || !a.time) return false;
-                    const t = parseLocalDateTime(a.date, a.time).getTime();
+                    const t = parseInTimezone(a.date, a.time, a.timezone).getTime();
                     return !isNaN(t) && t > now && t - now <= h1;
                 });
             }, [appointments]);
 
             // ── CRUD ────────────────────────────────────────────────────────
             const createAppointment = async () => {
-                if (!createForm.lead_id || !createForm.date || !createForm.time) return alert('Please select a lead, date, and time.');
+                if (!createForm.lead_id) return alert('Please select a lead.');
+                if (!createForm.date) return alert('Please select a date.');
+                if (!createForm.time) return alert('Please select a time.');
                 setSaving(true);
                 try {
                     const res = await fetch(`${API_URL}/api/appointments`, {
@@ -9706,7 +9795,7 @@ jane@startup.io"
                                         const leadName = apt.lead
                                             ? (`${apt.lead.first_name || ''} ${apt.lead.last_name || ''}`.trim() || apt.lead.email)
                                             : '—';
-                                        const aptMs = apt.date && apt.time ? parseLocalDateTime(apt.date, apt.time).getTime() : null;
+                                        const aptMs = apt.date && apt.time ? parseInTimezone(apt.date, apt.time, apt.timezone).getTime() : null;
                                         const minsUntil = aptMs ? Math.round((aptMs - Date.now()) / 60000) : null;
                                         const isSoon = minsUntil !== null && minsUntil > 0 && minsUntil <= 60;
                                         const isToday = minsUntil !== null && minsUntil > 0 && minsUntil <= 1440;
@@ -9790,15 +9879,23 @@ jane@startup.io"
                                     {/* Lead selector */}
                                     <div>
                                         <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Lead *</label>
-                                        <select value={createForm.lead_id} onChange={e => setCreateForm(f => ({ ...f, lead_id: e.target.value }))}
-                                            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm">
-                                            <option value="">Select a lead...</option>
-                                            {leads.map(l => (
-                                                <option key={l.id} value={l.id}>
-                                                    {[l.first_name, l.last_name].filter(Boolean).join(' ') || l.email} {l.company ? `· ${l.company}` : ''}
-                                                </option>
-                                            ))}
-                                        </select>
+                                        {leadsLoading ? (
+                                            <div className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-gray-50 dark:bg-gray-700 text-gray-400 text-sm">Loading leads...</div>
+                                        ) : leads.length === 0 ? (
+                                            <div className="w-full px-3 py-2 border border-red-300 dark:border-red-700 rounded-lg bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 text-sm">
+                                                No leads found. <a href="#" onClick={e => { e.preventDefault(); fetchLeads(); }} className="underline font-medium">Retry</a> or add leads first.
+                                            </div>
+                                        ) : (
+                                            <select value={createForm.lead_id} onChange={e => setCreateForm(f => ({ ...f, lead_id: e.target.value }))}
+                                                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm">
+                                                <option value="">Select a lead...</option>
+                                                {leads.map(l => (
+                                                    <option key={l.id} value={String(l.id)}>
+                                                        {[l.first_name, l.last_name].filter(Boolean).join(' ') || l.email} {l.company ? `· ${l.company}` : ''}
+                                                    </option>
+                                                ))}
+                                            </select>
+                                        )}
                                     </div>
                                     <div className="grid grid-cols-2 gap-3">
                                         {formInput('Date *', 'date', createForm.date, v => setCreateForm(f => ({ ...f, date: v })))}
@@ -9819,7 +9916,10 @@ jane@startup.io"
                                                 {[[15,'15 min'],[30,'30 min'],[45,'45 min'],[60,'1 hour']].map(([v,l]) => <option key={v} value={v}>{l}</option>)}
                                             </select>
                                         </div>
-                                        {formInput('Timezone', 'text', createForm.timezone, v => setCreateForm(f => ({ ...f, timezone: v })))}
+                                        <div>
+                                            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Timezone</label>
+                                            <TimezoneSelect value={createForm.timezone} onChange={v => setCreateForm(f => ({ ...f, timezone: v }))} />
+                                        </div>
                                     </div>
                                     {formInput('Meeting Link (optional)', 'url', createForm.meeting_link, v => setCreateForm(f => ({ ...f, meeting_link: v })), { placeholder: 'https://meet.google.com/...' })}
                                     <div>
@@ -9873,7 +9973,10 @@ jane@startup.io"
                                                 {[[15,'15 min'],[30,'30 min'],[45,'45 min'],[60,'1 hour']].map(([v,l]) => <option key={v} value={v}>{l}</option>)}
                                             </select>
                                         </div>
-                                        {formInput('Timezone', 'text', editForm.timezone || '', v => setEditForm(f => ({ ...f, timezone: v })))}
+                                        <div>
+                                            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Timezone</label>
+                                            <TimezoneSelect value={editForm.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone} onChange={v => setEditForm(f => ({ ...f, timezone: v }))} />
+                                        </div>
                                     </div>
                                     {formInput('Meeting Link (optional)', 'url', editForm.meeting_link || '', v => setEditForm(f => ({ ...f, meeting_link: v })), { placeholder: 'https://meet.google.com/...' })}
                                     <div>
