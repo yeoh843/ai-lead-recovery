@@ -737,9 +737,14 @@ STRIPE_PRICE_GROWTH_ANNUAL=price_YOUR_ID_HERE`}</pre>
                             console.warn('[App] SW registration failed:', err);
                         });
 
-                        // As soon as a controller is ready, send our auth token
-                        const sendAuth = (controller) => {
-                            controller.postMessage({ type: 'AUTH', token, url: API_URL });
+                        // As soon as a controller is ready, send our auth token + reminder rules
+                        const sendAuth = async (controller) => {
+                            let reminderRules = null;
+                            try {
+                                const r = await fetch(`${API_URL}/api/settings/reminders`, { headers: { 'Authorization': `Bearer ${token}` } });
+                                if (r.ok) { const d = await r.json(); reminderRules = d.rules; }
+                            } catch (_) {}
+                            controller.postMessage({ type: 'AUTH', token, url: API_URL, reminderRules });
                         };
                         navigator.serviceWorker.ready.then(reg => {
                             if (reg.active) sendAuth(reg.active);
@@ -942,9 +947,12 @@ STRIPE_PRICE_GROWTH_ANNUAL=price_YOUR_ID_HERE`}</pre>
                 setUser(userData);
                 setIsAuthenticated(true);
                 fetchConnectedEmail();
-                // Tell the Service Worker about the new auth token immediately
+                // Tell the Service Worker about the new auth token + reminder rules immediately
                 if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
-                    navigator.serviceWorker.controller.postMessage({ type: 'AUTH', token: newToken, url: API_URL });
+                    fetch(`${API_URL}/api/settings/reminders`, { headers: { 'Authorization': `Bearer ${newToken}` } })
+                        .then(r => r.ok ? r.json() : null)
+                        .then(d => navigator.serviceWorker.controller?.postMessage({ type: 'AUTH', token: newToken, url: API_URL, reminderRules: d?.rules || null }))
+                        .catch(() => navigator.serviceWorker.controller?.postMessage({ type: 'AUTH', token: newToken, url: API_URL }));
                 }
             };
 
@@ -4680,6 +4688,18 @@ jane@startup.io"
             const [savingBusinessKnowledge, setSavingBusinessKnowledge] = useState(false);
             const [businessKnowledgeMessage, setBusinessKnowledgeMessage] = useState(null);
 
+            // Appointment Reminder Rules State
+            const DEFAULT_RULES = [
+                { value: 3, unit: 'days', minutes: 4320 },
+                { value: 1, unit: 'hours', minutes: 60 },
+                { value: 15, unit: 'minutes', minutes: 15 }
+            ];
+            const [reminderRules, setReminderRules] = useState(DEFAULT_RULES);
+            const [newReminderValue, setNewReminderValue] = useState(30);
+            const [newReminderUnit, setNewReminderUnit] = useState('minutes');
+            const [savingReminders, setSavingReminders] = useState(false);
+            const [remindersMsg, setRemindersMsg] = useState(null);
+
             // Smart AI Extraction State
             const [uploadMethod, setUploadMethod] = useState('file'); // 'file', 'url', 'text'
             const [selectedFile, setSelectedFile] = useState(null);
@@ -4692,6 +4712,7 @@ jane@startup.io"
                 fetchSettings();
                 fetchSellerProfile();
                 fetchProductProfile();
+                fetchReminderRules();
 
                 // Check for OAuth callback success/error
                 const urlParams = new URLSearchParams(window.location.search);
@@ -4862,6 +4883,50 @@ jane@startup.io"
                         }
                     }
                 });
+            };
+
+            // Appointment Reminder Rules Functions
+            const fetchReminderRules = async () => {
+                if (isDemoMode || !token) return;
+                try {
+                    const res = await fetch(`${API_URL}/api/settings/reminders`, {
+                        headers: { 'Authorization': `Bearer ${token}` }
+                    });
+                    if (res.ok) { const d = await res.json(); if (d.rules?.length) setReminderRules(d.rules); }
+                } catch (_) {}
+            };
+
+            const toMinutes = (value, unit) =>
+                unit === 'days' ? value * 24 * 60 : unit === 'hours' ? value * 60 : value;
+
+            const addReminderRule = () => {
+                const mins = toMinutes(newReminderValue, newReminderUnit);
+                if (reminderRules.some(r => r.minutes === mins)) return; // duplicate
+                setReminderRules(prev =>
+                    [...prev, { value: newReminderValue, unit: newReminderUnit, minutes: mins }]
+                        .sort((a, b) => b.minutes - a.minutes) // descending: biggest first
+                );
+            };
+
+            const saveReminderRules = async () => {
+                if (isDemoMode) { setRemindersMsg({ type: 'info', text: 'Demo mode — changes not saved.' }); return; }
+                setSavingReminders(true);
+                try {
+                    const res = await fetch(`${API_URL}/api/settings/reminders`, {
+                        method: 'PATCH',
+                        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ rules: reminderRules })
+                    });
+                    if (!res.ok) throw new Error('Save failed');
+                    setRemindersMsg({ type: 'success', text: '✅ Reminder settings saved!' });
+                    // Push updated rules to Service Worker so it uses them immediately
+                    if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
+                        navigator.serviceWorker.controller.postMessage({ type: 'REMINDER_RULES', rules: reminderRules });
+                    }
+                    setTimeout(() => setRemindersMsg(null), 3000);
+                } catch (e) {
+                    setRemindersMsg({ type: 'error', text: 'Failed to save: ' + e.message });
+                } finally { setSavingReminders(false); }
             };
 
             // Seller Profile Functions
@@ -5637,6 +5702,69 @@ jane@startup.io"
                                         <strong>💡 Tip:</strong> The more information you provide, the better AI can generate persuasive emails. Try uploading your product brochure, pricing page, or case studies!
                                     </p>
                                 </div>
+                            </div>
+
+                            {/* Appointment Reminder Rules */}
+                            <div className="bg-white dark:bg-black border border-gray-200 dark:border-gray-800 rounded-lg shadow-lg p-6">
+                                <div className="flex items-center justify-between mb-1">
+                                    <div>
+                                        <h3 className="text-lg font-semibold text-gray-800 dark:text-white flex items-center">
+                                            <span className="mr-2">🔔</span> Appointment Reminders
+                                        </h3>
+                                        <p className="text-sm text-gray-600 dark:text-gray-400 mt-0.5">
+                                            Choose when to be notified before each appointment. You will get a browser notification and the lead will receive a reminder email at each time.
+                                        </p>
+                                    </div>
+                                    <button onClick={saveReminderRules} disabled={savingReminders}
+                                        className="flex-shrink-0 ml-4 px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 text-xs font-medium flex items-center gap-1.5">
+                                        {savingReminders ? <><div className="animate-spin h-3 w-3 border-2 border-white border-t-transparent rounded-full"></div> Saving…</> : '💾 Save'}
+                                    </button>
+                                </div>
+
+                                {remindersMsg && (
+                                    <div className={`mt-3 px-4 py-2 rounded text-sm ${remindersMsg.type === 'success' ? 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300' : 'bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300'}`}>
+                                        {remindersMsg.text}
+                                    </div>
+                                )}
+
+                                {/* Current rules list */}
+                                <div className="mt-4 space-y-2">
+                                    {reminderRules.length === 0 && (
+                                        <p className="text-sm text-gray-400 dark:text-gray-500 italic">No reminders configured. Add one below.</p>
+                                    )}
+                                    {reminderRules.map((rule, i) => (
+                                        <div key={i} className="flex items-center gap-3 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg px-4 py-2.5">
+                                            <span className="text-lg">🔔</span>
+                                            <span className="flex-1 text-sm font-medium text-gray-700 dark:text-gray-300">
+                                                {rule.value} {rule.unit} before appointment
+                                            </span>
+                                            <button onClick={() => setReminderRules(prev => prev.filter((_, j) => j !== i))}
+                                                className="text-red-400 hover:text-red-600 dark:hover:text-red-300 text-xl font-bold leading-none transition-colors"
+                                                title="Remove">×</button>
+                                        </div>
+                                    ))}
+                                </div>
+
+                                {/* Add new rule */}
+                                <div className="mt-4 flex items-center gap-2 flex-wrap">
+                                    <input type="number" min="1" max="365" value={newReminderValue}
+                                        onChange={e => setNewReminderValue(Math.max(1, +e.target.value || 1))}
+                                        className="w-20 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm" />
+                                    <select value={newReminderUnit} onChange={e => setNewReminderUnit(e.target.value)}
+                                        className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm">
+                                        <option value="minutes">minutes</option>
+                                        <option value="hours">hours</option>
+                                        <option value="days">days</option>
+                                    </select>
+                                    <span className="text-sm text-gray-500 dark:text-gray-400">before appointment</span>
+                                    <button onClick={addReminderRule}
+                                        className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm rounded-lg font-medium transition-colors">
+                                        + Add
+                                    </button>
+                                </div>
+                                <p className="mt-3 text-xs text-gray-400 dark:text-gray-500">
+                                    Click <strong>Save</strong> after adding or removing reminders. Reminders are sent once per appointment and reset if the appointment is rescheduled.
+                                </p>
                             </div>
 
                             {/* Follow-Up Rules */}

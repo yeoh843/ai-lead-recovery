@@ -6108,6 +6108,7 @@ app.patch('/api/appointments/:id', authenticate, async (req, res) => {
   if (wasRescheduled) {
     apt.reminder_24h_sent = false;
     apt.reminder_1h_sent = false;
+    apt.reminders_sent = {}; // reset custom reminder tracking too
   }
   apt.updated_at = new Date().toISOString();
 
@@ -6253,6 +6254,32 @@ app.get('/api/appointments/notifications', authenticate, async (req, res) => {
 
 // ─── Appointment Reminders ──────────────────────────────────────────────────────
 
+// Default reminder rules (each user can override via /api/settings/reminders)
+const DEFAULT_REMINDER_RULES = [
+  { value: 3, unit: 'days',    minutes: 4320 },
+  { value: 1, unit: 'hours',   minutes: 60   },
+  { value: 15, unit: 'minutes', minutes: 15  }
+];
+
+// GET /api/settings/reminders — return user's reminder rules (or defaults)
+app.get('/api/settings/reminders', authenticate, async (req, res) => {
+  await db.read();
+  const user = db.data.users.find(u => u.id === req.userId);
+  res.json({ rules: user?.reminder_rules || DEFAULT_REMINDER_RULES });
+});
+
+// PATCH /api/settings/reminders — save user's reminder rules
+app.patch('/api/settings/reminders', authenticate, async (req, res) => {
+  const { rules } = req.body;
+  if (!Array.isArray(rules)) return res.status(400).json({ error: 'rules must be an array' });
+  await db.read();
+  const userIdx = db.data.users.findIndex(u => u.id === req.userId);
+  if (userIdx === -1) return res.status(404).json({ error: 'User not found' });
+  db.data.users[userIdx].reminder_rules = rules;
+  await db.write();
+  res.json({ rules });
+});
+
 async function checkAppointmentReminders() {
   try {
     await db.read();
@@ -6267,34 +6294,38 @@ async function checkAppointmentReminders() {
       const timeUntilMs = aptTime - now;
       const lead = db.data.leads.find(l => l.id === apt.lead_id);
       const emailSettings = db.data.email_settings.find(s => s.user_id === apt.user_id);
-
       if (!lead || !emailSettings) continue;
+
+      // Get this user's configured reminder rules (fall back to defaults)
+      const user = db.data.users.find(u => u.id === apt.user_id);
+      const rules = user?.reminder_rules || DEFAULT_REMINDER_RULES;
+
+      // Initialise sent-tracker if missing
+      if (!apt.reminders_sent) { apt.reminders_sent = {}; changed = true; }
 
       const dateObj = new Date(aptTime);
       const formattedDate = dateObj.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
 
-      // 24h reminder window: between 23h55m and 24h05m before appointment
-      const msIn24h = 24 * 60 * 60 * 1000;
-      if (!apt.reminder_24h_sent && timeUntilMs > 0 && timeUntilMs <= msIn24h + 5 * 60 * 1000 && timeUntilMs > msIn24h - 5 * 60 * 1000) {
-        try {
-          const body = `Hi ${lead.first_name || lead.email},\n\nJust a reminder — we have a call scheduled tomorrow!\n\n📅 ${formattedDate}\n⏰ Time: ${apt.time} (${apt.timezone})\n⏱ Duration: ${apt.duration_minutes} minutes\n${apt.meeting_link ? `🔗 Join here: ${apt.meeting_link}\n` : ''}\nSee you soon!`;
-          await sendEmail(emailSettings, lead.email, 'Reminder: Your call is tomorrow', body);
-          apt.reminder_24h_sent = true;
-          changed = true;
-          console.log(`🔔 24h reminder sent to ${lead.email}`);
-        } catch (e) { console.error('24h reminder failed:', e.message); }
-      }
+      for (const rule of rules) {
+        const offsetMs = rule.minutes * 60_000;
+        const key = String(rule.minutes);
+        if (apt.reminders_sent[key]) continue; // already sent for this rule
 
-      // 1h reminder window: between 55m and 65m before appointment
-      const msIn1h = 60 * 60 * 1000;
-      if (!apt.reminder_1h_sent && timeUntilMs > 0 && timeUntilMs <= msIn1h + 5 * 60 * 1000 && timeUntilMs > msIn1h - 5 * 60 * 1000) {
-        try {
-          const body = `Hi ${lead.first_name || lead.email},\n\nYour call starts in 1 hour!\n\n📅 ${formattedDate}\n⏰ Time: ${apt.time} (${apt.timezone})\n${apt.meeting_link ? `🔗 Join here: ${apt.meeting_link}\n` : ''}\nTalk soon!`;
-          await sendEmail(emailSettings, lead.email, 'Your call starts in 1 hour', body);
-          apt.reminder_1h_sent = true;
-          changed = true;
-          console.log(`🔔 1h reminder sent to ${lead.email}`);
-        } catch (e) { console.error('1h reminder failed:', e.message); }
+        // Fire within a ±5 min window around the configured offset
+        if (timeUntilMs > 0 && timeUntilMs <= offsetMs + 5 * 60_000 && timeUntilMs > offsetMs - 5 * 60_000) {
+          try {
+            const label = rule.unit === 'days'
+              ? `${rule.value} day${rule.value !== 1 ? 's' : ''}`
+              : rule.unit === 'hours'
+              ? `${rule.value} hour${rule.value !== 1 ? 's' : ''}`
+              : `${rule.value} minute${rule.value !== 1 ? 's' : ''}`;
+            const body = `Hi ${lead.first_name || lead.email},\n\nReminder: your appointment is in ${label}!\n\n📅 ${formattedDate}\n⏰ Time: ${apt.time}${apt.timezone ? ` (${apt.timezone})` : ''}\n⏱ Duration: ${apt.duration_minutes || 30} minutes\n${apt.meeting_link ? `🔗 Join here: ${apt.meeting_link}\n` : ''}\nSee you soon!`;
+            await sendEmail(emailSettings, lead.email, `Appointment reminder: ${label} away`, body);
+            apt.reminders_sent[key] = true;
+            changed = true;
+            console.log(`🔔 ${label} reminder sent to ${lead.email} (apt ${apt.id})`);
+          } catch (e) { console.error(`${rule.minutes}min reminder failed:`, e.message); }
+        }
       }
     }
 

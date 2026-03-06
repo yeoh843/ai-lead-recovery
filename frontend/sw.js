@@ -12,6 +12,15 @@ let authToken    = null;
 let apiUrl       = 'http://localhost:3000';
 let pollingTimer = null;
 
+// User-configured reminder rules (loaded from API or set via message from page)
+let reminderRules = null;
+
+const DEFAULT_REMINDER_RULES = [
+    { value: 3,  unit: 'days',    minutes: 4320 },
+    { value: 1,  unit: 'hours',   minutes: 60   },
+    { value: 15, unit: 'minutes', minutes: 15   }
+];
+
 // Which reminder keys we've already fired this SW session
 // (survives tab-switching; resets only when SW is fully terminated)
 const shownReminders = new Set();
@@ -37,8 +46,12 @@ self.addEventListener('message', event => {
     if (msg.type === 'AUTH') {
         authToken = msg.token;
         if (msg.url) apiUrl = msg.url;
+        if (msg.reminderRules) reminderRules = msg.reminderRules;
         saveAuthToIDB(msg.token, apiUrl);
         startPolling();
+    } else if (msg.type === 'REMINDER_RULES') {
+        // Page sends updated rules when user saves settings
+        if (msg.rules) reminderRules = msg.rules;
     } else if (msg.type === 'LOGOUT') {
         authToken = null;
         stopPolling();
@@ -113,6 +126,28 @@ async function checkNewAppointments() {
     }
 }
 
+// ── Parse date+time in a specific IANA timezone (mirrors parseInTimezone on the page) ─────────
+function parseAptTime(date, time, tz) {
+    const [yr, mo, dy] = date.split('-').map(Number);
+    const [hr, mn]     = (time || '0:00').split(':').map(Number);
+    if (!tz || tz === 'local') return new Date(yr, mo - 1, dy, hr, mn, 0).getTime();
+    if (tz === 'UTC') return Date.UTC(yr, mo - 1, dy, hr, mn, 0);
+    try {
+        const ref  = new Date(Date.UTC(yr, mo - 1, dy, hr, mn, 0));
+        const parts = new Intl.DateTimeFormat('en-US', {
+            timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
+            hour: '2-digit', minute: '2-digit', hour12: false
+        }).formatToParts(ref);
+        const p = Object.fromEntries(parts.map(x => [x.type, x.value]));
+        const tzH = p.hour === '24' ? 0 : +p.hour;
+        const desiredMs  = Date.UTC(yr, mo - 1, dy, hr, mn);
+        const tzShowsMs  = Date.UTC(+p.year, +p.month - 1, +p.day, tzH, +p.minute);
+        return ref.getTime() + (desiredMs - tzShowsMs);
+    } catch (_) {
+        return new Date(yr, mo - 1, dy, hr, mn, 0).getTime();
+    }
+}
+
 // ── Upcoming appointment reminders ───────────────────────────────────────────
 
 async function checkUpcomingReminders() {
@@ -123,6 +158,19 @@ async function checkUpcomingReminders() {
         if (!res.ok) return;
         const { appointments = [] } = await res.json();
 
+        // Fetch user's reminder rules on first run (or if not yet loaded)
+        if (!reminderRules) {
+            try {
+                const ruleRes = await fetch(`${apiUrl}/api/settings/reminders`, {
+                    headers: { Authorization: `Bearer ${authToken}` }
+                });
+                if (ruleRes.ok) { const d = await ruleRes.json(); reminderRules = d.rules; }
+            } catch (_) {}
+        }
+        const rules = (reminderRules && reminderRules.length > 0)
+            ? reminderRules
+            : DEFAULT_REMINDER_RULES;
+
         const now  = Date.now();
         const openClients = await clients.matchAll({ type: 'window', includeUncontrolled: true });
         const appOpen = openClients.some(c => new URL(c.url).origin === self.location.origin);
@@ -130,81 +178,56 @@ async function checkUpcomingReminders() {
         for (const apt of appointments) {
             if (apt.status !== 'scheduled' || !apt.date || !apt.time) continue;
 
-            // Parse as LOCAL time (same logic as parseLocalDateTime in the page)
-            const [yr, mo, dy] = apt.date.split('-').map(Number);
-            const [hr, mn]     = (apt.time || '0:00').split(':').map(Number);
-            const aptTime      = new Date(yr, mo - 1, dy, hr, mn, 0).getTime();
-            // Allow up to 2 minutes past appointment time to cover polling gaps
+            const aptTime = parseAptTime(apt.date, apt.time, apt.timezone);
             if (isNaN(aptTime) || aptTime < now - 2 * 60_000) continue;
 
             const minsUntil = Math.round((aptTime - now) / 60_000);
             const leadName  = apt.lead
                 ? (`${apt.lead.first_name || ''} ${apt.lead.last_name || ''}`.trim() || apt.lead.email)
                 : 'Unknown lead';
-            const timeLabel = `${apt.date} at ${apt.time}`;
+            const timeLabel = `${apt.date} at ${apt.time}${apt.timezone ? ` (${apt.timezone})` : ''}`;
 
-            // ── Tier 1: 24-hour heads-up ──
-            const key24h = `${apt.id}-24h`;
-            if (minsUntil > 60 && minsUntil <= 1440 && !shownReminders.has(key24h)) {
-                shownReminders.add(key24h);
-                const hoursUntil = Math.round(minsUntil / 60);
+            for (const rule of rules) {
+                const key = `${apt.id}-${rule.minutes}m`;
+                if (shownReminders.has(key)) continue;
 
-                if (!appOpen) {
-                    await self.registration.showNotification(`⏰ Appointment in ${hoursUntil}h`, {
-                        body:  `${leadName} · ${timeLabel} • Click to view`,
-                        icon:  '/favicon.ico',
-                        badge: '/favicon.ico',
-                        tag:   `apt-24h-${apt.id}`,
-                        data:  { url: '/appointments', type: 'reminder_24h', aptId: apt.id }
+                // Fire if minsUntil is within ±5 min of the rule's offset
+                const diff = minsUntil - rule.minutes;
+                if (minsUntil >= 0 && diff >= -5 && diff <= 5) {
+                    shownReminders.add(key);
+
+                    const label = rule.unit === 'days'
+                        ? `${rule.value} day${rule.value !== 1 ? 's' : ''}`
+                        : rule.unit === 'hours'
+                        ? `${rule.value} hour${rule.value !== 1 ? 's' : ''}`
+                        : rule.value <= 0
+                        ? 'Starting NOW'
+                        : `${rule.value} min`;
+
+                    const isUrgent = rule.minutes <= 30;
+                    const icon = minsUntil <= 0 ? '🔴' : isUrgent ? '🟡' : '⏰';
+
+                    if (!appOpen) {
+                        await self.registration.showNotification(
+                            minsUntil <= 0
+                                ? `🔴 Appointment starting NOW!`
+                                : `${icon} Appointment in ${label}`,
+                            {
+                                body:               `${leadName} · ${timeLabel} • Click to view`,
+                                icon:               '/favicon.ico',
+                                badge:              '/favicon.ico',
+                                tag:                `apt-${apt.id}-${rule.minutes}m`,
+                                requireInteraction: isUrgent,
+                                vibrate:            isUrgent ? [300, 100, 300, 100, 300] : [200, 100, 200],
+                                data:               { url: '/appointments', type: `reminder_${rule.minutes}m`, aptId: apt.id }
+                            }
+                        );
+                    }
+                    await broadcastToClients({
+                        type: 'SW_REMINDER', reminderType: `${rule.minutes}m`,
+                        apt, minsUntil, leadName, timeLabel, label
                     });
                 }
-                await broadcastToClients({
-                    type: 'SW_REMINDER', reminderType: '24h',
-                    apt, hoursUntil, leadName, timeLabel
-                });
-            }
-
-            // ── Tier 2: 1-hour "prepare now" reminder ──
-            const key1h = `${apt.id}-1h`;
-            if (minsUntil > 15 && minsUntil <= 60 && !shownReminders.has(key1h)) {
-                shownReminders.add(key1h);
-
-                if (!appOpen) {
-                    await self.registration.showNotification(`🟡 Appointment in ${minsUntil} min — prepare!`, {
-                        body:   `${leadName} · ${timeLabel} • Click to view`,
-                        icon:   '/favicon.ico',
-                        badge:  '/favicon.ico',
-                        tag:    `apt-1h-${apt.id}`,
-                        data:   { url: '/appointments', type: 'reminder_1h', aptId: apt.id }
-                    });
-                }
-                await broadcastToClients({
-                    type: 'SW_REMINDER', reminderType: '1h',
-                    apt, minsUntil, leadName, timeLabel
-                });
-            }
-
-            // ── Tier 3: 15-minute URGENT reminder ──
-            const key15m = `${apt.id}-15m`;
-            if (minsUntil <= 15 && minsUntil >= 0 && !shownReminders.has(key15m)) {
-                shownReminders.add(key15m);
-                const label = minsUntil <= 0 ? 'Starting NOW!' : `in ${minsUntil} min!`;
-
-                if (!appOpen) {
-                    await self.registration.showNotification(`🔴 Appointment ${label}`, {
-                        body:             `${leadName} · ${timeLabel} • Click to view`,
-                        icon:             '/favicon.ico',
-                        badge:            '/favicon.ico',
-                        tag:              `apt-15m-${apt.id}`,
-                        requireInteraction: true,
-                        vibrate:          [300, 100, 300, 100, 300],
-                        data:             { url: '/appointments', type: 'reminder_15m', aptId: apt.id }
-                    });
-                }
-                await broadcastToClients({
-                    type: 'SW_REMINDER', reminderType: '15m',
-                    apt, minsUntil, leadName, timeLabel
-                });
             }
         }
     } catch (e) {
