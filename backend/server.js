@@ -461,7 +461,6 @@ app.get('/api/auth/google', authenticate, (req, res) => {
     prompt: 'consent', // Force consent screen to always get refresh_token
     scope: [
       'https://www.googleapis.com/auth/gmail.modify',
-      'https://www.googleapis.com/auth/gmail.send',
       'https://www.googleapis.com/auth/userinfo.email'
     ],
     state: req.userId.toString() // Pass user ID to callback
