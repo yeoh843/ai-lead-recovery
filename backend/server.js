@@ -75,7 +75,7 @@ app.use(express.json({ limit: '50mb' })); // Increased limit for email attachmen
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // Serve frontend static files (must be BEFORE the URL rewrite middleware below)
-app.use(express.static(path.join(__dirname, '../frontend')));
+app.use(express.static(path.join(__dirname, '../frontend'), { index: false }));
 
 // Public landing page at root
 app.get('/', (req, res) => {
