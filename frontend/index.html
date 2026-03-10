@@ -299,10 +299,10 @@
 
             // Stripe Price IDs from your .env
             const PRICES = {
-                starter_monthly: 'price_1T3BbDB6QdpZs0Sxl3vLnM3h',
-                growth_monthly: 'price_1T3Bd0B6QdpZs0SxkdV7cMpU',
-                starter_annual: 'price_1T3BcTB6QdpZs0SxSJqYvPdq',
-                growth_annual: 'price_1T3BdPB6QdpZs0SxbwGwp8dg'
+                starter_monthly: 'price_1T9PtjPgheNl9AUcCxmm7Xsv',
+                growth_monthly: 'price_1T9PuTPgheNl9AUcNnHCR1cG',
+                starter_annual: 'price_1T9PvyPgheNl9AUc8UFqfWdO',
+                growth_annual: 'price_1T9PwlPgheNl9AUcmxiPOPvW'
             };
 
             // Handle Stripe redirect — verify session to update plan in DB
@@ -566,48 +566,6 @@
                                 <p className="font-semibold">Is annual billing a one-time charge?</p>
                                 <p className={darkMode ? 'text-gray-400' : 'text-gray-600'}>Yes — billed once per year. You save 20% compared to monthly billing.</p>
                             </div>
-                        </div>
-                    </div>
-
-                    {/* Stripe Setup Guide */}
-                    <div className={`rounded-2xl p-6 mt-6 ${darkMode ? 'bg-gray-900 border border-gray-700' : 'bg-gray-50 border border-gray-200'}`}>
-                        <h3 className="font-bold text-lg mb-4">⚙️ Stripe Setup Guide (One-Time)</h3>
-                        <ol className={`space-y-3 text-sm list-decimal list-inside ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                            <li>
-                                <span className="font-semibold">Create a free Stripe account</span> at{' '}
-                                <span className={`font-mono text-xs px-1 py-0.5 rounded ${darkMode ? 'bg-gray-700' : 'bg-gray-200'}`}>stripe.com</span>
-                            </li>
-                            <li>
-                                <span className="font-semibold">Get your test API key:</span> Dashboard → Developers → API Keys → copy <span className={`font-mono text-xs px-1 py-0.5 rounded ${darkMode ? 'bg-gray-700' : 'bg-gray-200'}`}>Secret key</span> (starts with <span className="font-mono text-xs">sk_test_...</span>)
-                            </li>
-                            <li>
-                                <span className="font-semibold">Create 4 products</span> in Dashboard → Products → Add Product:
-                                <ul className={`mt-1 ml-4 space-y-1 list-disc ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                                    <li>Starter Monthly — $29 / month (recurring)</li>
-                                    <li>Starter Annual — $279 / year (recurring)</li>
-                                    <li>Growth Monthly — $79 / month (recurring)</li>
-                                    <li>Growth Annual — $759 / year (recurring)</li>
-                                </ul>
-                            </li>
-                            <li>
-                                <span className="font-semibold">Copy each Price ID</span> (looks like <span className="font-mono text-xs">price_1ABC...</span>) from each product
-                            </li>
-                            <li>
-                                <span className="font-semibold">Paste into</span> <span className={`font-mono text-xs px-1 py-0.5 rounded ${darkMode ? 'bg-gray-700' : 'bg-gray-200'}`}>backend/.env</span>:
-                                <pre className={`mt-2 p-3 rounded-lg text-xs overflow-x-auto ${darkMode ? 'bg-black text-green-400' : 'bg-gray-900 text-green-400'}`}>{`STRIPE_SECRET_KEY=sk_test_YOUR_KEY_HERE
-STRIPE_PRICE_STARTER_MONTHLY=price_YOUR_ID_HERE
-STRIPE_PRICE_GROWTH_MONTHLY=price_YOUR_ID_HERE
-STRIPE_PRICE_STARTER_ANNUAL=price_YOUR_ID_HERE
-STRIPE_PRICE_GROWTH_ANNUAL=price_YOUR_ID_HERE`}</pre>
-                            </li>
-                            <li><span className="font-semibold">Restart your server</span> after saving .env</li>
-                            <li>
-                                <span className="font-semibold">Set up webhook</span> (for subscription events): Dashboard → Developers → Webhooks → Add endpoint → URL: <span className={`font-mono text-xs px-1 py-0.5 rounded ${darkMode ? 'bg-gray-700' : 'bg-gray-200'}`}>https://yourdomain.com/api/webhooks/stripe</span>
-                                <br/><span className={darkMode ? 'text-gray-400' : 'text-gray-500'}>Events: checkout.session.completed, invoice.payment_succeeded, invoice.payment_failed, customer.subscription.deleted, customer.subscription.updated</span>
-                            </li>
-                        </ol>
-                        <div className={`mt-4 p-3 rounded-lg text-xs ${darkMode ? 'bg-blue-900/40 text-blue-300' : 'bg-blue-50 text-blue-700'}`}>
-                            <strong>Tip:</strong> Use test mode (sk_test_...) while developing. Switch to live keys (sk_live_...) when you're ready to accept real payments.
                         </div>
                     </div>
                 </div>
