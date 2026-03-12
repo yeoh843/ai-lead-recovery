@@ -537,6 +537,20 @@ app.get('/api/auth/google/callback', async (req, res) => {
 
     await db.write();
 
+    // Auto-enable Gmail Push Notifications if Google Cloud is configured
+    if (process.env.GOOGLE_CLOUD_PROJECT_ID) {
+      setImmediate(async () => {
+        try {
+          await db.read();
+          const s = db.data.email_settings.find(s => s.user_id === userId);
+          if (s) await setupGmailPushNotifications(s, userId);
+          console.log(`✅ Gmail Push Notifications auto-enabled for user ${userId}`);
+        } catch (err) {
+          console.error(`⚠️ Auto push setup failed for user ${userId} (non-fatal):`, err.message);
+        }
+      });
+    }
+
     // Redirect back to frontend (works for both localhost and production)
     res.redirect(`${baseUrl}/settings?success=gmail_connected`);
   } catch (error) {
@@ -3168,6 +3182,53 @@ app.post('/api/emails/enable-push', authenticate, async (req, res) => {
   }
 });
 
+// ⚡ Gmail Push Notification Webhook — Google Pub/Sub calls this when a new email arrives
+// No auth middleware: Google sends this from its own servers.
+// MUST respond 200 immediately or Pub/Sub will retry.
+app.post('/api/gmail/webhook', async (req, res) => {
+  res.status(200).send('OK'); // Acknowledge FIRST — Pub/Sub retries if no 200 within timeout
+
+  try {
+    const { message } = req.body || {};
+    if (!message?.data) return;
+
+    // Decode the base64 Pub/Sub message body
+    const decoded = JSON.parse(Buffer.from(message.data, 'base64').toString('utf-8'));
+    const { emailAddress, historyId } = decoded;
+    if (!emailAddress) return;
+
+    await db.read();
+    const settings = db.data.email_settings.find(s =>
+      s.email === emailAddress && s.provider === 'gmail' && !s.token_invalid
+    );
+
+    if (!settings) {
+      console.log(`📨 Gmail push: no active user for ${emailAddress} — ignoring`);
+      return;
+    }
+
+    console.log(`📨 Gmail push notification for ${emailAddress} (historyId: ${historyId})`);
+
+    // Update stored historyId so renewal and future pushes use the latest
+    if (historyId) {
+      const dbSettings = db.data.email_settings.find(s => s.user_id === settings.user_id);
+      if (dbSettings) {
+        dbSettings.push_history_id = historyId;
+        await db.write();
+      }
+    }
+
+    // Re-read settings with updated tokens before checking
+    await db.read();
+    const freshSettings = db.data.email_settings.find(s => s.user_id === settings.user_id);
+    if (freshSettings) {
+      await checkGmailReplies(freshSettings, freshSettings.user_id);
+    }
+  } catch (err) {
+    console.error('Gmail webhook error:', err.message);
+  }
+});
+
 // Get email interactions/threads for inbox view
 app.get('/api/emails/interactions', authenticate, async (req, res) => {
   try {
@@ -4302,7 +4363,11 @@ async function setupGmailPushNotifications(settings, userId) {
     if (dbSettings) {
       dbSettings.push_enabled = true;
       dbSettings.push_setup_at = new Date().toISOString();
-      dbSettings.push_history_id = response.data.historyId;
+      dbSettings.push_expiration = response.data.expiration; // Unix ms — used by renewal cron
+      // Only reset historyId on first setup, not on renewal (to avoid missing messages)
+      if (!dbSettings.push_history_id) {
+        dbSettings.push_history_id = response.data.historyId;
+      }
       await db.write();
     }
 
@@ -6424,6 +6489,36 @@ async function refreshAllGmailTokens() {
   }
 }
 
+// ─── Gmail Watch Renewal ─────────────────────────────────────────────────────
+// Gmail push notification watches expire after 7 days. Renew every 6 hours so
+// there's always at least 18h of buffer before expiry.
+async function renewGmailWatches() {
+  if (!process.env.GOOGLE_CLOUD_PROJECT_ID) return; // Push not configured — skip
+  try {
+    await db.read();
+    const gmailSettings = (db.data.email_settings || []).filter(
+      s => s.provider === 'gmail' && s.push_enabled && !s.token_invalid
+    );
+
+    for (const settings of gmailSettings) {
+      try {
+        const expiresAt = parseInt(settings.push_expiration || 0);
+        const twentyFourHours = 24 * 60 * 60 * 1000;
+        // Only renew if expiring within 24h or expiration unknown
+        if (expiresAt && expiresAt - Date.now() > twentyFourHours) continue;
+
+        console.log(`🔄 [WatchRenew] Renewing Gmail watch for user ${settings.user_id}...`);
+        await setupGmailPushNotifications(settings, settings.user_id);
+        console.log(`✅ [WatchRenew] Watch renewed for user ${settings.user_id}`);
+      } catch (err) {
+        console.error(`❌ [WatchRenew] Failed for user ${settings.user_id}:`, err.message);
+      }
+    }
+  } catch (err) {
+    console.error('❌ [WatchRenew] Job error:', err.message);
+  }
+}
+
 // Check appointment reminders every minute
 cron.schedule('* * * * *', async () => {
   await checkAppointmentReminders();
@@ -6479,11 +6574,15 @@ async function checkGmailAutomatic() {
   }
 }
 
-// Run every 1 minute, then again after 30 seconds (0-30sec latency)
-cron.schedule('* * * * *', async () => {
+// Fallback poll every 5 minutes — catches any emails missed by push (push failure, watch expired, etc.)
+// This runs much less aggressively than the old 30s poll, so token churn is drastically reduced.
+cron.schedule('*/5 * * * *', async () => {
   await checkGmailAutomatic();
-  // Run again after 30s for faster email detection
-  setTimeout(checkGmailAutomatic, 30000);
+});
+
+// Renew Gmail push watches every 6 hours (watches expire after 7 days)
+cron.schedule('0 */6 * * *', async () => {
+  await renewGmailWatches();
 });
 
 // Proactively refresh Gmail tokens every 5 minutes — prevents mid-send token expiry
