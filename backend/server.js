@@ -63,12 +63,25 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
 
-// Google OAuth client
+// Google OAuth client (used only for the initial auth flow — generateAuthUrl / getToken)
 const oauth2Client = new google.auth.OAuth2(
   process.env.GOOGLE_CLIENT_ID,
   process.env.GOOGLE_CLIENT_SECRET,
   process.env.GOOGLE_REDIRECT_URI
 );
+
+// Create a FRESH OAuth2 client instance for each user operation.
+// NEVER use the global oauth2Client for per-user operations — it is a shared singleton
+// and concurrent mutations cause race conditions that invalidate tokens.
+function makeOAuth2Client(credentials) {
+  const client = new google.auth.OAuth2(
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_SECRET,
+    process.env.GOOGLE_REDIRECT_URI
+  );
+  client.setCredentials(credentials);
+  return client;
+}
 
 app.use(cors());
 app.use(express.json({ limit: '50mb' })); // Increased limit for email attachments
@@ -2258,7 +2271,9 @@ app.get('/api/settings/email', authenticate, async (req, res) => {
     from_name: settings.from_name || '',
     sending_mode: settings.sending_mode || 'manual',
     auto_send_enabled: settings.auto_send_enabled || false,
-    last_checked: settings.last_checked
+    last_checked: settings.last_checked,
+    token_invalid: settings.token_invalid || false,
+    token_invalid_since: settings.token_invalid_since || null
   });
 });
 
@@ -3697,8 +3712,8 @@ async function checkGmailReplies(settings, userId) {
     });
     console.log('='.repeat(60));
 
-    // Set up OAuth2 credentials
-    oauth2Client.setCredentials({
+    // Create a fresh OAuth2 client for this user (avoids race conditions with the global singleton)
+    const authClient = makeOAuth2Client({
       access_token: settings.access_token,
       refresh_token: settings.refresh_token,
       expiry_date: settings.token_expiry
@@ -3707,15 +3722,17 @@ async function checkGmailReplies(settings, userId) {
     // Refresh token if expired
     if (settings.token_expiry && settings.token_expiry < Date.now()) {
       console.log('🔄 Refreshing expired Gmail access token...');
-      const { credentials } = await oauth2Client.refreshAccessToken();
-      oauth2Client.setCredentials(credentials);
+      const { credentials } = await authClient.refreshAccessToken();
+      authClient.setCredentials(credentials);
 
-      // Update stored tokens in database (FIX: Update the actual DB object!)
+      // Update stored tokens in database
       await db.read();
       const dbSettings = db.data.email_settings.find(s => s.user_id === userId);
       if (dbSettings) {
         dbSettings.access_token = credentials.access_token;
         dbSettings.token_expiry = credentials.expiry_date;
+        // Save new refresh_token if Google rotated it
+        if (credentials.refresh_token) dbSettings.refresh_token = credentials.refresh_token;
         await db.write();
         console.log('✅ Refreshed tokens saved to database');
       }
@@ -3723,9 +3740,10 @@ async function checkGmailReplies(settings, userId) {
       // Update local settings object too
       settings.access_token = credentials.access_token;
       settings.token_expiry = credentials.expiry_date;
+      if (credentials.refresh_token) settings.refresh_token = credentials.refresh_token;
     }
 
-    const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+    const gmail = google.gmail({ version: 'v1', auth: authClient });
 
     // Build query: only check emails FROM lead addresses (much more efficient)
     const leadEmails = userLeads.map(l => `from:${l.email}`).join(' OR ');
@@ -4234,8 +4252,8 @@ async function setupGmailPushNotifications(settings, userId) {
   try {
     console.log(`\n🔔 Setting up Gmail Push Notifications for user ${userId}...`);
 
-    // Set up OAuth2 credentials
-    oauth2Client.setCredentials({
+    // Create a fresh OAuth2 client for this user
+    const authClient = makeOAuth2Client({
       access_token: settings.access_token,
       refresh_token: settings.refresh_token,
       expiry_date: settings.token_expiry
@@ -4244,8 +4262,8 @@ async function setupGmailPushNotifications(settings, userId) {
     // Refresh token if expired
     if (settings.token_expiry && settings.token_expiry < Date.now()) {
       console.log('🔄 Refreshing Gmail access token...');
-      const { credentials } = await oauth2Client.refreshAccessToken();
-      oauth2Client.setCredentials(credentials);
+      const { credentials } = await authClient.refreshAccessToken();
+      authClient.setCredentials(credentials);
 
       // Update database
       await db.read();
@@ -4253,13 +4271,15 @@ async function setupGmailPushNotifications(settings, userId) {
       if (dbSettings) {
         dbSettings.access_token = credentials.access_token;
         dbSettings.token_expiry = credentials.expiry_date;
+        if (credentials.refresh_token) dbSettings.refresh_token = credentials.refresh_token;
         await db.write();
       }
       settings.access_token = credentials.access_token;
       settings.token_expiry = credentials.expiry_date;
+      if (credentials.refresh_token) settings.refresh_token = credentials.refresh_token;
     }
 
-    const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+    const gmail = google.gmail({ version: 'v1', auth: authClient });
     const topicName = `projects/${process.env.GOOGLE_CLOUD_PROJECT_ID}/topics/gmail-notifications`;
 
     // Watch Gmail inbox for new messages
@@ -4741,8 +4761,8 @@ async function sendEmail(settings, to, subject, body, senderName = null, options
   }
 
   try {
-    // Set up OAuth2 credentials
-    oauth2Client.setCredentials({
+    // Create a fresh OAuth2 client for this user (avoids race conditions with the global singleton)
+    const authClient = makeOAuth2Client({
       access_token: settings.access_token,
       refresh_token: settings.refresh_token,
       expiry_date: settings.token_expiry
@@ -4751,15 +4771,16 @@ async function sendEmail(settings, to, subject, body, senderName = null, options
     // Check if token is expired and refresh if needed
     if (settings.token_expiry && settings.token_expiry < Date.now()) {
       console.log('🔄 Refreshing expired Gmail access token...');
-      const { credentials } = await oauth2Client.refreshAccessToken();
-      oauth2Client.setCredentials(credentials);
+      const { credentials } = await authClient.refreshAccessToken();
+      authClient.setCredentials(credentials);
 
-      // Update stored tokens in database (FIX: Update the actual DB object!)
-      await db.read();  // Read latest data
+      // Update stored tokens in database
+      await db.read();
       const dbSettings = db.data.email_settings.find(s => s.email === settings.email);
       if (dbSettings) {
         dbSettings.access_token = credentials.access_token;
         dbSettings.token_expiry = credentials.expiry_date;
+        if (credentials.refresh_token) dbSettings.refresh_token = credentials.refresh_token;
         await db.write();
         console.log('✅ Refreshed tokens saved to database');
       }
@@ -4767,10 +4788,11 @@ async function sendEmail(settings, to, subject, body, senderName = null, options
       // Update local settings object too
       settings.access_token = credentials.access_token;
       settings.token_expiry = credentials.expiry_date;
+      if (credentials.refresh_token) settings.refresh_token = credentials.refresh_token;
     }
 
     // Use Gmail API directly (more reliable than nodemailer OAuth2)
-    const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+    const gmail = google.gmail({ version: 'v1', auth: authClient });
 
     // Build email content
     const displayName = senderName || settings.email.split('@')[0];
@@ -6359,18 +6381,21 @@ async function refreshAllGmailTokens() {
 
         console.log(`🔄 [TokenRefresh] Refreshing token for user ${settings.user_id} (${settings.email})...`);
 
-        oauth2Client.setCredentials({
+        // Create a fresh OAuth2 client for this user (avoids race conditions with the global singleton)
+        const authClient = makeOAuth2Client({
           access_token: settings.access_token,
           refresh_token: settings.refresh_token,
           expiry_date: settings.token_expiry
         });
 
-        const { credentials } = await oauth2Client.refreshAccessToken();
+        const { credentials } = await authClient.refreshAccessToken();
 
         const dbSettings = db.data.email_settings.find(s => s.user_id === settings.user_id);
         if (dbSettings) {
           dbSettings.access_token = credentials.access_token;
           dbSettings.token_expiry = credentials.expiry_date;
+          // Save new refresh_token if Google rotated it — critical to prevent invalid_grant
+          if (credentials.refresh_token) dbSettings.refresh_token = credentials.refresh_token;
           dbSettings.updated_at = new Date().toISOString();
           await db.write();
           console.log(`✅ [TokenRefresh] Token refreshed for user ${settings.user_id} — expires ${new Date(credentials.expiry_date).toISOString()}`);
@@ -6429,8 +6454,8 @@ async function checkGmailAutomatic() {
   try {
     await db.read();
 
-    // Check all users with Gmail OAuth configured
-    const gmailSettings = (db.data.email_settings || []).filter(s => s.provider === 'gmail' && s.access_token);
+    // Check all users with Gmail OAuth configured (skip accounts with invalid/revoked tokens)
+    const gmailSettings = (db.data.email_settings || []).filter(s => s.provider === 'gmail' && s.access_token && !s.token_invalid);
 
     for (const settings of gmailSettings) {
       try {
