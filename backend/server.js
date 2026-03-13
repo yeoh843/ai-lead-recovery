@@ -16,6 +16,8 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { existsSync } from 'fs';
 import Stripe from 'stripe';
+import { simpleParser } from 'mailparser';
+import crypto from 'crypto';
 
 dotenv.config();
 
@@ -467,6 +469,17 @@ app.get('/api/auth/me', authenticate, async (req, res) => {
   }
 });
 
+// Get user's inbound email forwarding address
+app.get('/api/auth/google/inbound-address', authenticate, async (req, res) => {
+  await db.read();
+  const settings = (db.data.email_settings || []).find(s => s.user_id === req.userId);
+  if (!settings || !settings.inbound_token) {
+    return res.json({ inbound_address: null });
+  }
+  const domain = process.env.APP_URL ? new URL(process.env.APP_URL).hostname : 'zerotouchmail.com';
+  res.json({ inbound_address: `${settings.inbound_token}@${domain}` });
+});
+
 // Google OAuth - Step 1: Initiate OAuth flow
 app.get('/api/auth/google', authenticate, (req, res) => {
   const authUrl = oauth2Client.generateAuthUrl({
@@ -513,7 +526,8 @@ app.get('/api/auth/google/callback', async (req, res) => {
       provider: 'gmail',
       access_token: tokens.access_token,
       token_expiry: tokens.expiry_date,
-      auto_send_enabled: existingSettings?.auto_send_enabled ?? false
+      auto_send_enabled: existingSettings?.auto_send_enabled ?? false,
+      inbound_token: existingSettings?.inbound_token || crypto.randomBytes(16).toString('hex')
     };
 
     // Only update refresh_token if Google returned a new one (on first auth or explicit reconsent)
@@ -5575,6 +5589,198 @@ ${outputRule}`;
 //
 // Optional: Keep this cron for backup polling if webhook fails
 // cron.schedule('*/5 * * * *', async () => { ... });
+
+// ─── Cloudflare Email Worker Inbound Webhook ──────────────────────────────────
+app.post('/api/email/inbound', async (req, res) => {
+  try {
+    // Verify webhook secret
+    const secret = req.headers['x-webhook-secret'];
+    if (!secret || secret !== process.env.WEBHOOK_SECRET) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const { from, to, subject, rawEmail } = req.body;
+    if (!from || !to || !rawEmail) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    // Parse raw email to extract clean text body
+    const parsed = await simpleParser(rawEmail);
+    const emailBody = parsed.text || parsed.textAsHtml || '';
+
+    if (!emailBody.trim()) {
+      return res.status(200).json({ message: 'Empty body, skipped' });
+    }
+
+    // Extract inbound token from To address (token@zerotouchmail.com)
+    const toAddress = Array.isArray(to) ? to[0] : to;
+    const tokenMatch = toAddress.match(/^([^@]+)@/);
+    if (!tokenMatch) return res.status(200).json({ message: 'Invalid to address' });
+    const inboundToken = tokenMatch[1];
+
+    // Find user by inbound token
+    await db.read();
+    const settings = (db.data.email_settings || []).find(s => s.inbound_token === inboundToken);
+    if (!settings) {
+      console.log(`⚠️ Inbound email: no user found for token ${inboundToken}`);
+      return res.status(200).json({ message: 'Unknown token, skipped' });
+    }
+    const userId = settings.user_id;
+
+    // Find lead by sender email
+    const fromEmail = from.toLowerCase().trim().replace(/^.*<(.+)>$/, '$1');
+    const lead = db.data.leads.find(l =>
+      l.user_id === userId &&
+      l.email && l.email.toLowerCase().trim() === fromEmail
+    );
+
+    if (!lead) {
+      console.log(`⚠️ Inbound email from ${fromEmail}: no matching lead for user ${userId}`);
+      return res.status(200).json({ message: 'No matching lead, skipped' });
+    }
+
+    // Dedup: check if already processed this exact email (same from + subject + body)
+    const alreadyProcessed = (db.data.email_threads || []).find(t =>
+      t.lead_id === lead.id &&
+      t.body === emailBody &&
+      t.subject === (subject || '')
+    );
+    if (alreadyProcessed) {
+      console.log(`⏭️ Inbound email from ${fromEmail}: already processed, skipping`);
+      return res.status(200).json({ message: 'Already processed' });
+    }
+
+    console.log(`📬 Inbound email from ${fromEmail} (lead: ${lead.first_name}) — processing...`);
+
+    // Analyze intent with AI
+    const analysis = await analyzeReplyWithAI(emailBody, subject || '');
+
+    // Update lead
+    const prevIntent = lead.ai_intent;
+    const shouldUpdateIntent = !(prevIntent === 'INTERESTED' && analysis.intent === 'GHOSTING');
+    if (shouldUpdateIntent) {
+      if (prevIntent && prevIntent !== analysis.intent) lead.follow_up_count = 0;
+      lead.ai_intent = analysis.intent;
+    }
+    lead.ai_reasoning = analysis.reasoning;
+    lead.last_reply = emailBody;
+    lead.last_reply_date = new Date().toISOString();
+    lead.last_subject = subject || '(No Subject)';
+    lead.status = lead.ai_intent === 'INTERESTED' ? 'interested' : (lead.ai_intent === 'DEAD' ? 'dead' : 'analyzed');
+
+    // Auto-pause sequence on reply
+    if (lead.enrolled_sequence_id && lead.sequence_completed === false && !lead.sequence_paused) {
+      lead.sequence_paused = true;
+    }
+
+    // Save email thread
+    if (!db.data.email_threads) db.data.email_threads = [];
+    db.data.email_threads.push({
+      id: db.data.email_threads.length + 1,
+      inbound_message_id: `${fromEmail}-${Date.now()}`,
+      lead_id: lead.id,
+      user_id: userId,
+      from: fromEmail,
+      subject: subject || '',
+      body: emailBody,
+      received_at: new Date().toISOString(),
+      ai_intent: analysis.intent,
+      notified: false
+    });
+
+    await db.write();
+
+    // Detect appointment
+    try {
+      const aptDetected = await detectAppointmentFromEmail(emailBody, subject || '');
+      if (aptDetected) {
+        const alreadyExists = (db.data.appointments || []).some(a =>
+          a.lead_id === lead.id && a.source === 'ai_detected' &&
+          a.date === (aptDetected.date || '') && a.time === (aptDetected.time || '')
+        );
+        if (!alreadyExists) {
+          if (!db.data.appointments) db.data.appointments = [];
+          db.data.appointments.push({
+            id: Date.now(), user_id: userId, lead_id: lead.id,
+            date: aptDetected.date || '', time: aptDetected.time || '',
+            timezone: aptDetected.timezone || 'UTC', duration_minutes: 30,
+            meeting_link: '', notes: aptDetected.notes || '',
+            appointment_type: aptDetected.appointment_type || 'call',
+            status: 'scheduled', source: 'ai_detected', notified: false,
+            outcome: null, reminder_24h_sent: false, reminder_1h_sent: false,
+            created_at: new Date().toISOString(), updated_at: new Date().toISOString()
+          });
+          const lIdx = db.data.leads.findIndex(l => l.id === lead.id);
+          if (lIdx !== -1) {
+            db.data.leads[lIdx].status = 'appointment_scheduled';
+            db.data.leads[lIdx].updated_at = new Date().toISOString();
+          }
+          await db.write();
+        }
+      }
+    } catch (aptErr) {
+      console.error('[Appointment Detection] Failed silently:', aptErr.message);
+    }
+
+    // Generate AI response
+    const existingDraft = (db.data.ai_drafts || []).find(d =>
+      d.lead_id === lead.id && d.reply_text === emailBody && d.status === 'pending'
+    );
+
+    let draft = null;
+    let clarificationNeeded = false;
+
+    if (!existingDraft) {
+      const aiResult = await generateAIResponse(lead, emailBody, analysis.intent, subject || '');
+      if (aiResult) {
+        draft = aiResult.body;
+        clarificationNeeded = aiResult.clarification_needed || false;
+      }
+    }
+
+    if (draft && draft.trim()) {
+      const user = db.data.users.find(u => u.id === userId);
+      const shouldAutoSend = user && user.auto_mode_enabled && !user.auto_mode_paused && lead.auto_send_enabled !== false;
+
+      if (shouldAutoSend) {
+        const sendResult = await sendEmail(settings, lead.email, `Re: ${subject || ''}`, draft, null, { lead_id: lead.id });
+        if (!db.data.email_interactions) db.data.email_interactions = [];
+        db.data.email_interactions.push({
+          id: db.data.email_interactions.length + 1,
+          lead_id: lead.id, user_id: userId, direction: 'sent',
+          subject: `Re: ${subject || ''}`, body: draft,
+          message_id: sendResult.threading_message_id,
+          sent_at: new Date().toISOString()
+        });
+        const liveLeadIdx = db.data.leads.findIndex(l => l.id === lead.id);
+        if (liveLeadIdx !== -1) {
+          db.data.leads[liveLeadIdx].status = 'replied';
+          db.data.leads[liveLeadIdx].last_email_sent_date = new Date().toISOString();
+        }
+        await db.write();
+        console.log(`🚀 AUTO-SENT reply to ${lead.first_name} via inbound webhook (Intent: ${analysis.intent})`);
+      } else {
+        // Save as draft for manual review
+        if (!db.data.ai_drafts) db.data.ai_drafts = [];
+        db.data.ai_drafts.push({
+          id: db.data.ai_drafts.length + 1,
+          lead_id: lead.id, user_id: userId,
+          draft_body: draft, ai_intent: analysis.intent,
+          reply_text: emailBody, reply_subject: subject || '',
+          status: 'pending', clarification_needed: clarificationNeeded,
+          created_at: new Date().toISOString()
+        });
+        await db.write();
+        console.log(`📝 Draft saved for ${lead.first_name} (Intent: ${analysis.intent})`);
+      }
+    }
+
+    res.status(200).json({ success: true });
+  } catch (err) {
+    console.error('❌ Inbound email webhook error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // Send Email using Template
 app.post('/api/send-email', authenticate, async (req, res) => {
