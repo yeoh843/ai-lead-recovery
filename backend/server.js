@@ -5636,6 +5636,8 @@ app.post('/api/email/inbound', async (req, res) => {
 
     if (!lead) {
       console.log(`⚠️ Inbound email from ${fromEmail}: no matching lead for user ${userId}`);
+      console.log(`📧 Email subject: ${subject}`);
+      console.log(`📧 Email body preview: ${emailBody.substring(0, 500)}`);
       return res.status(200).json({ message: 'No matching lead, skipped' });
     }
 
