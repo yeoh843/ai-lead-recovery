@@ -6178,6 +6178,23 @@ app.post('/api/billing/create-checkout', authenticate, async (req, res) => {
   try {
     // Create or reuse Stripe customer
     let customerId = user.stripe_customer_id;
+    if (customerId) {
+      // Verify customer exists in current Stripe environment (live vs sandbox)
+      try {
+        await stripe.customers.retrieve(customerId);
+      } catch (custErr) {
+        if (custErr.code === 'resource_missing') {
+          // Customer belongs to a different Stripe environment — reset and create fresh
+          console.log(`⚠️ Stripe customer ${customerId} not found in current environment — creating new one`);
+          customerId = null;
+          const uIdx = db.data.users.findIndex(u => u.id === req.userId);
+          db.data.users[uIdx].stripe_customer_id = null;
+          await db.write();
+        } else {
+          throw custErr;
+        }
+      }
+    }
     if (!customerId) {
       const customer = await stripe.customers.create({
         email: user.email,
