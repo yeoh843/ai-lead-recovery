@@ -1818,7 +1818,12 @@ app.post('/api/leads/:id/analyze-reply', authenticate, async (req, res) => {
   if (!lead) {
     return res.status(404).json({ error: 'Lead not found' });
   }
-  
+
+  const userForCheck = db.data.users.find(u => u.id === req.userId);
+  if (!isPlanActive(userForCheck)) {
+    return res.status(402).json({ error: 'plan_expired', message: 'Your free trial has expired. Please upgrade to continue.', upgrade_url: '/billing' });
+  }
+
   try {
     // Call Claude API for AI analysis
     const analysisResponse = await fetch('https://api.anthropic.com/v1/messages', {
@@ -2640,6 +2645,12 @@ app.post('/api/settings/product-extract', authenticate, upload.single('file'), a
       return res.status(400).json({ error: 'Please provide a file, URL, or text content' });
     }
 
+    await db.read();
+    const userForCheck = db.data.users.find(u => u.id === req.userId);
+    if (!isPlanActive(userForCheck)) {
+      return res.status(402).json({ error: 'plan_expired', message: 'Your free trial has expired. Please upgrade to continue.', upgrade_url: '/billing' });
+    }
+
     if (!process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY === 'demo-mode') {
       console.log('❌ Error: ANTHROPIC_API_KEY not set');
       return res.status(400).json({ error: 'ANTHROPIC_API_KEY is not set' });
@@ -3130,6 +3141,11 @@ app.post('/api/settings/follow-up-rules', authenticate, async (req, res) => {
 app.post('/api/emails/check', authenticate, async (req, res) => {
   await db.read();
 
+  const userForCheck = db.data.users.find(u => u.id === req.userId);
+  if (!isPlanActive(userForCheck)) {
+    return res.status(402).json({ error: 'plan_expired', message: 'Your free trial has expired. Please upgrade to continue.', upgrade_url: '/billing' });
+  }
+
   const settings = db.data.email_settings.find(s => s.user_id === req.userId);
 
   if (!settings) {
@@ -3236,6 +3252,11 @@ app.post('/api/gmail/webhook', async (req, res) => {
     await db.read();
     const freshSettings = db.data.email_settings.find(s => s.user_id === settings.user_id);
     if (freshSettings) {
+      const userForPlan = db.data.users.find(u => u.id === freshSettings.user_id);
+      if (!isPlanActive(userForPlan)) {
+        console.log(`⛔ Gmail push: user ${freshSettings.user_id} trial expired — skipping AI processing`);
+        return;
+      }
       await checkGmailReplies(freshSettings, freshSettings.user_id);
     }
   } catch (err) {
@@ -5636,6 +5657,12 @@ app.post('/api/email/inbound', async (req, res) => {
       return res.status(200).json({ message: 'Unknown token, skipped' });
     }
     const userId = settings.user_id;
+
+    const inboundUser = db.data.users.find(u => u.id === userId);
+    if (!isPlanActive(inboundUser)) {
+      console.log(`⛔ Inbound email: user ${userId} trial expired — skipping AI processing`);
+      return res.status(200).json({ message: 'Plan expired, skipped' });
+    }
 
     // Find lead by sender email
     const fromEmail = from.toLowerCase().trim().replace(/^.*<(.+)>$/, '$1');
