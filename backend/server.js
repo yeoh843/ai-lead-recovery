@@ -6803,8 +6803,8 @@ let _gmailCheckRunning = false;
 
 // Function to check Gmail
 async function checkGmailAutomatic() {
-  if (_gmailCheckRunning || _sequenceProcessing) {
-    console.log('⏭️ Skipping Gmail check — another job is running');
+  if (_gmailCheckRunning) {
+    console.log('⏭️ Skipping Gmail check — Gmail check already running');
     return;
   }
   _gmailCheckRunning = true;
