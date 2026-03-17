@@ -3911,6 +3911,22 @@ async function checkGmailReplies(settings, userId) {
           continue; // Skip to next message
         }
 
+        // CRITICAL: Mark message as being processed IMMEDIATELY to prevent concurrent requests from duplicating
+        // (must happen BEFORE any async operations like AI analysis)
+        db.data.email_threads.push({
+          id: db.data.email_threads.length + 1,
+          gmail_message_id: message.id,
+          lead_id: lead.id,
+          user_id: userId,
+          from: fromEmail,
+          subject: subject,
+          body: emailBody,
+          received_at: new Date().toISOString(),
+          ai_intent: 'PROCESSING',
+          notified: false
+        });
+        await db.write();
+
           console.log(`✉️  Processing reply from ${lead.first_name} (${fromEmail})`);
 
           // Analyze with AI (including subject line for better context)
@@ -3974,19 +3990,13 @@ async function checkGmailReplies(settings, userId) {
             }
           }
 
-          // Store email thread with Gmail message ID for deduplication
-          db.data.email_threads.push({
-            id: db.data.email_threads.length + 1,
-            gmail_message_id: message.id, // Store Gmail message ID to prevent duplicates
-            lead_id: lead.id,
-            user_id: userId,
-            from: fromEmail,
-            subject: subject,
-            body: emailBody,
-            received_at: new Date().toISOString(),
-            ai_intent: analysis.intent,
-            notified: false // Track if user has been notified about this email
-          });
+          // Update the email thread with AI analysis results
+          // (entry was already created earlier with PROCESSING status to prevent duplicates)
+          const threadIdx = db.data.email_threads.findIndex(t => t.gmail_message_id === message.id);
+          if (threadIdx !== -1) {
+            db.data.email_threads[threadIdx].ai_intent = analysis.intent;
+            db.data.email_threads[threadIdx].received_at = new Date().toISOString();
+          }
 
           await db.write();
 
