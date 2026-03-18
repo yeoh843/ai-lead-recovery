@@ -2231,7 +2231,50 @@ Category:`
 // EMAIL SYSTEM - IMAP/SMTP
 // ============================================
 
-// Save Email Settings (from_name and sending_mode only - OAuth handles email)
+// Save IMAP/SMTP credentials
+app.post('/api/settings/imap-smtp', authenticate, async (req, res) => {
+  const { email, password, from_name, imap_host, imap_port, imap_tls, smtp_host, smtp_port, smtp_secure } = req.body;
+  if (!email || !password || !imap_host || !smtp_host) {
+    return res.status(400).json({ error: 'email, password, imap_host, and smtp_host are required' });
+  }
+  await db.read();
+  const imapConfig = { user: email, password, host: imap_host, port: parseInt(imap_port) || 993, tls: imap_tls !== false };
+  const smtpConfig = { host: smtp_host, port: parseInt(smtp_port) || 587, secure: smtp_secure === true, user: email, password };
+  let settings = db.data.email_settings.find(s => s.user_id === req.userId);
+  if (settings) {
+    settings.provider = 'imap';
+    settings.email = email;
+    settings.from_name = from_name || email;
+    settings.imap = imapConfig;
+    settings.smtp = smtpConfig;
+    settings.updated_at = new Date().toISOString();
+  } else {
+    db.data.email_settings.push({ id: Date.now(), user_id: req.userId, provider: 'imap', email, from_name: from_name || email, imap: imapConfig, smtp: smtpConfig, created_at: new Date().toISOString(), updated_at: new Date().toISOString() });
+  }
+  await db.write();
+  res.json({ success: true });
+});
+
+// Test IMAP connection
+app.post('/api/settings/imap-smtp/test', authenticate, async (req, res) => {
+  const { email, password, imap_host, imap_port, imap_tls } = req.body;
+  const imapConfig = { user: email, password, host: imap_host, port: parseInt(imap_port) || 993, tls: imap_tls !== false, tlsOptions: { rejectUnauthorized: false } };
+  const imap = new Imap(imapConfig);
+  const timeout = setTimeout(() => { try { imap.end(); } catch(e) {} res.status(408).json({ error: 'Connection timed out' }); }, 10000);
+  imap.once('ready', () => { clearTimeout(timeout); imap.end(); res.json({ success: true }); });
+  imap.once('error', (err) => { clearTimeout(timeout); res.status(400).json({ error: err.message }); });
+  imap.connect();
+});
+
+// Get IMAP/SMTP settings (masked)
+app.get('/api/settings/imap-smtp', authenticate, async (req, res) => {
+  await db.read();
+  const settings = db.data.email_settings.find(s => s.user_id === req.userId && s.provider === 'imap');
+  if (!settings) return res.json({ configured: false });
+  res.json({ configured: true, email: settings.email, from_name: settings.from_name, imap_host: settings.imap?.host, imap_port: settings.imap?.port, imap_tls: settings.imap?.tls, smtp_host: settings.smtp?.host, smtp_port: settings.smtp?.port, smtp_secure: settings.smtp?.secure });
+});
+
+// Save Email Settings (from_name and sending_mode only)
 app.post('/api/settings/email', authenticate, async (req, res) => {
   const { from_name, sending_mode } = req.body;
 
@@ -2239,8 +2282,8 @@ app.post('/api/settings/email', authenticate, async (req, res) => {
 
   const existingSettings = db.data.email_settings.find(s => s.user_id === req.userId);
 
-  if (!existingSettings || existingSettings.provider !== 'gmail') {
-    return res.status(400).json({ error: 'Please connect your Gmail account first via OAuth' });
+  if (!existingSettings) {
+    return res.status(400).json({ error: 'Please configure email settings first' });
   }
 
   // Only update from_name and sending_mode - OAuth handles the email
@@ -4856,9 +4899,30 @@ Do NOT use placeholder text like [Your Name].`,
  * - Email interactions must store the message_id field
  */
 async function sendEmail(settings, to, subject, body, senderName = null, options = {}) {
-  // Gmail OAuth ONLY - no Resend
+  // SMTP path for IMAP/SMTP users
+  if (settings.provider === 'imap' && settings.smtp) {
+    const { host, port, secure, user, password } = settings.smtp;
+    const transporter = nodemailer.createTransport({ host, port, secure: secure || false, auth: { user: user || settings.email, pass: password }, tls: { rejectUnauthorized: false } });
+    const displayName = senderName || settings.from_name || settings.email;
+    const htmlContent = options.html || body.replace(/\n/g, '<br>');
+    const messageId = `<${Date.now()}-${Math.random().toString(36).substring(2, 9)}@${settings.email.split('@')[1]}>`;
+    const mailOptions = { from: `"${displayName}" <${settings.email}>`, to, subject, html: htmlContent, messageId, headers: {} };
+    if (options.lead_id) {
+      const previousEmails = db.data.email_interactions?.filter(e => e.lead_id === options.lead_id && e.direction === 'sent' && e.message_id) || [];
+      if (previousEmails.length > 0) {
+        const lastEmail = previousEmails[previousEmails.length - 1];
+        mailOptions.headers['In-Reply-To'] = lastEmail.message_id;
+        mailOptions.headers['References'] = previousEmails.map(e => e.message_id).join(' ');
+      }
+    }
+    const result = await transporter.sendMail(mailOptions);
+    console.log(`✅ Email sent via SMTP to ${to}`);
+    return { id: result.messageId, threading_message_id: messageId };
+  }
+
+  // Gmail OAuth path
   if (!settings.provider || settings.provider !== 'gmail') {
-    throw new Error('❌ Gmail OAuth not configured. Please connect Gmail in Settings.');
+    throw new Error('❌ Email not configured. Please set up IMAP/SMTP or connect Gmail in Settings.');
   }
 
   if (!settings.access_token || !settings.refresh_token) {
@@ -6811,22 +6875,31 @@ async function checkGmailAutomatic() {
   try {
     await db.read();
 
-    // Check all users with Gmail OAuth configured (skip accounts with invalid/revoked tokens)
+    // Check Gmail OAuth users
     const gmailSettings = (db.data.email_settings || []).filter(s => s.provider === 'gmail' && s.access_token && !s.token_invalid);
-
     for (const settings of gmailSettings) {
       try {
-        console.log(`🔄 Auto-checking emails for user ${settings.user_id}...`);
+        console.log(`🔄 Auto-checking Gmail for user ${settings.user_id}...`);
         const newReplies = await checkGmailReplies(settings, settings.user_id);
-
-        if (newReplies.length > 0) {
-          console.log(`✉️  Found ${newReplies.length} new replies for user ${settings.user_id}`);
-        }
-
+        if (newReplies.length > 0) console.log(`✉️  Found ${newReplies.length} new replies for user ${settings.user_id}`);
         settings.last_checked = new Date().toISOString();
         await db.write();
       } catch (userError) {
-        console.error(`Error checking emails for user ${settings.user_id}:`, userError.message);
+        console.error(`Error checking Gmail for user ${settings.user_id}:`, userError.message);
+      }
+    }
+
+    // Check IMAP users
+    const imapSettings = (db.data.email_settings || []).filter(s => s.provider === 'imap' && s.imap);
+    for (const settings of imapSettings) {
+      try {
+        console.log(`🔄 Auto-checking IMAP for user ${settings.user_id}...`);
+        const newReplies = await checkEmailReplies(settings, settings.user_id);
+        if (newReplies.length > 0) console.log(`✉️  Found ${newReplies.length} new IMAP replies for user ${settings.user_id}`);
+        settings.last_checked = new Date().toISOString();
+        await db.write();
+      } catch (userError) {
+        console.error(`Error checking IMAP for user ${settings.user_id}:`, userError.message);
       }
     }
   } catch (error) {
