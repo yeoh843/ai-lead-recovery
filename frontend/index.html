@@ -5367,37 +5367,50 @@ jane@startup.io"
                                                 </div>
                                             </div>
                                         )}
-                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                            <div>
-                                                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Email Address</label>
-                                                <input type="email" value={imapForm.email} onChange={e => setImapForm({...imapForm, email: e.target.value})} placeholder="you@example.com" className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm" />
-                                            </div>
-                                            <div>
-                                                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Password / App Password</label>
-                                                <input type="password" value={imapForm.password} onChange={e => setImapForm({...imapForm, password: e.target.value})} placeholder="••••••••••••" className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm" />
-                                            </div>
-                                            <div>
-                                                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Display Name (From)</label>
-                                                <input type="text" value={imapForm.from_name} onChange={e => setImapForm({...imapForm, from_name: e.target.value})} placeholder="Your Name or Company" className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm" />
-                                            </div>
-                                            <div></div>
-                                            <div>
-                                                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">IMAP Host</label>
-                                                <input type="text" value={imapForm.imap_host} onChange={e => setImapForm({...imapForm, imap_host: e.target.value})} placeholder="imap.gmail.com" className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm" />
-                                            </div>
-                                            <div>
-                                                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">IMAP Port</label>
-                                                <input type="number" value={imapForm.imap_port} onChange={e => setImapForm({...imapForm, imap_port: e.target.value})} placeholder="993" className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm" />
-                                            </div>
-                                            <div>
-                                                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">SMTP Host</label>
-                                                <input type="text" value={imapForm.smtp_host} onChange={e => setImapForm({...imapForm, smtp_host: e.target.value})} placeholder="smtp.gmail.com" className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm" />
-                                            </div>
-                                            <div>
-                                                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">SMTP Port</label>
-                                                <input type="number" value={imapForm.smtp_port} onChange={e => setImapForm({...imapForm, smtp_port: e.target.value})} placeholder="587" className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm" />
+                                        {/* Step 1: Pick provider */}
+                                        <div>
+                                            <p className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Step 1 — Choose your email provider</p>
+                                            <div className="flex gap-2 flex-wrap">
+                                                {[
+                                                    { label: '📧 Gmail', imap_host: 'imap.gmail.com', imap_port: '993', imap_tls: true, smtp_host: 'smtp.gmail.com', smtp_port: '587', smtp_secure: false },
+                                                    { label: '📨 Outlook / Hotmail', imap_host: 'outlook.office365.com', imap_port: '993', imap_tls: true, smtp_host: 'smtp.office365.com', smtp_port: '587', smtp_secure: false },
+                                                    { label: '📬 Yahoo Mail', imap_host: 'imap.mail.yahoo.com', imap_port: '993', imap_tls: true, smtp_host: 'smtp.mail.yahoo.com', smtp_port: '587', smtp_secure: false },
+                                                    { label: '⚙️ Other', imap_host: '', imap_port: '993', imap_tls: true, smtp_host: '', smtp_port: '587', smtp_secure: false }
+                                                ].map(p => (
+                                                    <button key={p.label} onClick={() => setImapForm(prev => ({ ...prev, imap_host: p.imap_host, imap_port: p.imap_port, imap_tls: p.imap_tls, smtp_host: p.smtp_host, smtp_port: p.smtp_port, smtp_secure: p.smtp_secure }))}
+                                                        className={`px-4 py-2 text-sm rounded-lg border transition-colors ${imapForm.imap_host === p.imap_host && p.imap_host ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300' : 'border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-300'}`}
+                                                    >{p.label}</button>
+                                                ))}
                                             </div>
                                         </div>
+                                        {/* Step 2: Email + Password */}
+                                        <div>
+                                            <p className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Step 2 — Enter your credentials</p>
+                                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                                <div>
+                                                    <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">Email Address</label>
+                                                    <input type="email" value={imapForm.email} onChange={e => setImapForm({...imapForm, email: e.target.value})} placeholder="you@gmail.com" className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm" />
+                                                </div>
+                                                <div>
+                                                    <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">App Password <span className="text-gray-400">(not your normal password)</span></label>
+                                                    <input type="password" value={imapForm.password} onChange={e => setImapForm({...imapForm, password: e.target.value})} placeholder="••••••••••••" className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm" />
+                                                </div>
+                                                <div>
+                                                    <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">Display Name (how your name appears to customers)</label>
+                                                    <input type="text" value={imapForm.from_name} onChange={e => setImapForm({...imapForm, from_name: e.target.value})} placeholder="Your Name or Company" className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm" />
+                                                </div>
+                                            </div>
+                                        </div>
+                                        {/* Advanced (hidden by default) */}
+                                        <details className="text-sm">
+                                            <summary className="cursor-pointer text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200">⚙️ Advanced settings (host/port — auto-filled above)</summary>
+                                            <div className="grid grid-cols-2 gap-3 mt-3">
+                                                <div><label className="block text-xs text-gray-500 mb-1">IMAP Host</label><input type="text" value={imapForm.imap_host} onChange={e => setImapForm({...imapForm, imap_host: e.target.value})} className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm" /></div>
+                                                <div><label className="block text-xs text-gray-500 mb-1">IMAP Port</label><input type="number" value={imapForm.imap_port} onChange={e => setImapForm({...imapForm, imap_port: e.target.value})} className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm" /></div>
+                                                <div><label className="block text-xs text-gray-500 mb-1">SMTP Host</label><input type="text" value={imapForm.smtp_host} onChange={e => setImapForm({...imapForm, smtp_host: e.target.value})} className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm" /></div>
+                                                <div><label className="block text-xs text-gray-500 mb-1">SMTP Port</label><input type="number" value={imapForm.smtp_port} onChange={e => setImapForm({...imapForm, smtp_port: e.target.value})} className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm" /></div>
+                                            </div>
+                                        </details>
                                         <div className="flex gap-3">
                                             <button
                                                 onClick={async () => {
@@ -5405,7 +5418,7 @@ jane@startup.io"
                                                     try {
                                                         const r = await fetch(`${API_URL}/api/settings/imap-smtp/test`, { method: 'POST', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(imapForm) });
                                                         const d = await r.json();
-                                                        setImapMessage(r.ok ? { type: 'success', text: '✅ IMAP connection successful!' } : { type: 'error', text: `❌ ${d.error}` });
+                                                        setImapMessage(r.ok ? { type: 'success', text: '✅ Connection successful!' } : { type: 'error', text: `❌ ${d.error}` });
                                                     } catch(e) { setImapMessage({ type: 'error', text: '❌ Connection failed' }); }
                                                     setTestingImap(false);
                                                 }}
@@ -5419,7 +5432,7 @@ jane@startup.io"
                                                         const r = await fetch(`${API_URL}/api/settings/imap-smtp`, { method: 'POST', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(imapForm) });
                                                         const d = await r.json();
                                                         if (r.ok) {
-                                                            setImapMessage({ type: 'success', text: '✅ IMAP/SMTP settings saved!' });
+                                                            setImapMessage({ type: 'success', text: '✅ Email connected!' });
                                                             setEmailSettings(prev => ({ ...prev, provider: 'imap', email: imapForm.email }));
                                                             if (onEmailConnected) onEmailConnected();
                                                         } else { setImapMessage({ type: 'error', text: `❌ ${d.error}` }); }
@@ -5428,11 +5441,11 @@ jane@startup.io"
                                                 }}
                                                 disabled={savingImap || !imapForm.email || !imapForm.password || !imapForm.imap_host || !imapForm.smtp_host}
                                                 className="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded-lg disabled:opacity-50"
-                                            >{savingImap ? 'Saving...' : '💾 Save IMAP/SMTP'}</button>
+                                            >{savingImap ? 'Saving...' : '💾 Save & Connect'}</button>
                                         </div>
                                         <div className="p-4 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-lg text-sm text-amber-800 dark:text-amber-300">
-                                            <p className="font-medium mb-1">📌 Gmail users: use an App Password</p>
-                                            <p>Go to <strong>myaccount.google.com → Security → 2-Step Verification → App passwords</strong> and generate a password for "Mail". Use that as the password above. IMAP host: <code>imap.gmail.com</code>, SMTP host: <code>smtp.gmail.com</code>, SMTP port: <code>587</code>.</p>
+                                            <p className="font-medium mb-1">📌 What is an App Password?</p>
+                                            <p>It's a special password just for this app — NOT your normal Gmail password. Go to <strong>myaccount.google.com → Security → 2-Step Verification → App passwords</strong>, generate one for "Mail", and paste it above.</p>
                                         </div>
                                     </div>
                                 )}
