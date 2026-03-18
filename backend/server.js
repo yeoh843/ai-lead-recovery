@@ -486,7 +486,8 @@ app.get('/api/auth/google', authenticate, (req, res) => {
     access_type: 'offline',
     prompt: 'consent', // Force consent screen to always get refresh_token
     scope: [
-      'https://www.googleapis.com/auth/gmail.modify',
+      'https://www.googleapis.com/auth/gmail.readonly',
+      'https://www.googleapis.com/auth/gmail.send',
       'https://www.googleapis.com/auth/userinfo.email'
     ],
     state: req.userId.toString() // Pass user ID to callback
@@ -4362,18 +4363,8 @@ async function checkGmailReplies(settings, userId) {
             }
           }
 
-          // Try to mark as read (may fail if only gmail.readonly scope)
-          try {
-            await gmail.users.messages.modify({
-              userId: 'me',
-              id: message.id,
-              requestBody: {
-                removeLabelIds: ['UNREAD']
-              }
-            });
-          } catch (readErr) {
-            // Scope limitation - we track by gmail_message_id instead
-          }
+          // Mark-as-read removed — gmail.modify scope replaced with gmail.readonly + gmail.send
+          // Processed emails are tracked via gmail_message_id in email_threads table
 
           console.log(`✅ Processed: ${lead.first_name} - Intent: ${analysis.intent}`);
       } catch (msgError) {
