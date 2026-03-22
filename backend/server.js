@@ -3966,7 +3966,15 @@ async function checkGmailReplies(settings, userId) {
           continue; // Skip to next message
         }
 
-        // Check if this message has already been processed (prevent duplicates)
+        // Primary dedup: in-memory Set checked+locked synchronously (no async gap)
+        // This catches push notification + cron running concurrently before DB write
+        if (_processedMessageIds.has(message.id)) {
+          console.log(`   ⏭️  Already processing message ${message.id} (in-memory lock)`);
+          continue;
+        }
+        _processedMessageIds.add(message.id); // Lock immediately — synchronous, no race
+
+        // Secondary dedup: DB check (catches restarts where in-memory Set is cleared)
         const alreadyProcessed = db.data.email_threads.find(t =>
           t.gmail_message_id === message.id
         );
@@ -4541,6 +4549,13 @@ Classification:`
       lower.includes('schedule') || lower.includes('call me') || lower.includes("let's talk") ||
       lower.includes('where is') || lower.includes('what is the') || lower.includes('how much') ||
       lower.includes('more info') || lower.includes('tell me more') ||
+      lower.includes('asking about') || lower.includes('ask about') || lower.includes('want to know') ||
+      lower.includes('can you tell') || lower.includes('could you tell') || lower.includes('please tell') ||
+      lower.includes('what about') || lower.includes('how about') || lower.includes('do you have') ||
+      lower.includes('is there') || lower.includes('any info') || lower.includes('more detail') ||
+      lower.includes('your product') || lower.includes('your service') || lower.includes('your offer') ||
+      lower.includes('price') || lower.includes('cost') || lower.includes('available') ||
+      lower.includes('feature') || lower.includes('how does') || lower.includes('what does') ||
       // Question = asking something = INTERESTED
       lower.trim().endsWith('?') ||
       // Communication platform / contact method names = wants to connect
@@ -6855,6 +6870,10 @@ cron.schedule('* * * * *', async () => {
 
 // Auto-check Gmail for replies every 30 seconds
 let _gmailCheckRunning = false;
+// In-memory set of Gmail message IDs already processed — prevents duplicates
+// when push notification and 5-min cron fire at the same time.
+// Survives for lifetime of server process; DB is the permanent record.
+const _processedMessageIds = new Set();
 
 // Function to check Gmail
 async function checkGmailAutomatic() {
