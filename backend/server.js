@@ -1453,7 +1453,7 @@ app.post('/api/leads/:id/generate-initial-email', authenticate, async (req, res)
         'anthropic-version': '2023-06-01'
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
+        model: 'claude-haiku-4-5-20251001',
         max_tokens: 300,
         messages: [{
           role: 'user',
@@ -1545,7 +1545,7 @@ app.post('/api/leads/:id/generate-email-content', authenticate, async (req, res)
         'anthropic-version': '2023-06-01'
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
+        model: 'claude-haiku-4-5-20251001',
         max_tokens: 400,
         messages: [{
           role: 'user',
@@ -1673,7 +1673,7 @@ app.post('/api/leads/:id/polish-email', authenticate, async (req, res) => {
         'anthropic-version': '2023-06-01'
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
+        model: 'claude-haiku-4-5-20251001',
         max_tokens: (field_type === 'subject' || field_type === 'subject_generate') ? 50 : 400,
         messages: [{ role: 'user', content: prompt }]
       })
@@ -2769,7 +2769,7 @@ app.post('/api/settings/product-extract', authenticate, upload.single('file'), a
         'anthropic-version': '2023-06-01'
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
+        model: 'claude-haiku-4-5-20251001',
         max_tokens: 1500,
         messages: [{
           role: 'user',
@@ -4818,7 +4818,7 @@ Do NOT use placeholder text like [Your Name].`,
         'anthropic-version': '2023-06-01'
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
+        model: 'claude-haiku-4-5-20251001',
         max_tokens: 300,
         messages: [{
           role: 'user',
@@ -5662,7 +5662,7 @@ ${outputRule}`;
         'anthropic-version': '2023-06-01'
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
+        model: 'claude-haiku-4-5-20251001',
         max_tokens: 300,
         messages: [{ role: 'user', content: promptContent }]
       })
