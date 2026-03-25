@@ -375,6 +375,11 @@ app.get('/api/admin/early-access', async (req, res) => {
   res.json({ count: db.data.early_access_requests.length, requests: db.data.early_access_requests });
 });
 
+// Admin page
+app.get('/admin', (req, res) => {
+  res.sendFile(path.join(__dirname, '../frontend/admin-early-access.html'));
+});
+
 app.post('/api/auth/register', async (req, res) => {
   const { email, password, company_name } = req.body;
   if (!email || !password) return res.status(400).json({ error: 'Email and password are required' });

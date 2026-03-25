@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Early Access Requests — Admin</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f9fafb; color: #111827; padding: 32px; }
+        h1 { font-size: 22px; font-weight: 700; margin-bottom: 6px; }
+        .subtitle { font-size: 14px; color: #6b7280; margin-bottom: 24px; }
+        .badge { background: #1d4ed8; color: #fff; font-size: 13px; font-weight: 600; padding: 2px 10px; border-radius: 999px; margin-left: 8px; }
+        table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 10px; overflow: hidden; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
+        th { background: #f3f4f6; text-align: left; padding: 12px 16px; font-size: 13px; color: #374151; font-weight: 600; border-bottom: 1px solid #e5e7eb; }
+        td { padding: 12px 16px; font-size: 14px; border-bottom: 1px solid #f3f4f6; vertical-align: middle; }
+        tr:last-child td { border-bottom: none; }
+        tr:hover td { background: #f9fafb; }
+        .copy-btn { background: #1d4ed8; color: #fff; border: none; padding: 5px 12px; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+        .copy-btn.copied { background: #16a34a; }
+        .copy-btn:hover { opacity: 0.85; }
+        .empty { text-align: center; padding: 48px; color: #9ca3af; font-size: 15px; }
+        .login-box { max-width: 340px; margin: 80px auto; background: #fff; border-radius: 12px; padding: 32px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); text-align: center; }
+        .login-box h2 { font-size: 20px; font-weight: 700; margin-bottom: 20px; }
+        .login-box input { width: 100%; padding: 11px 14px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 15px; margin-bottom: 12px; outline: none; }
+        .login-box button { width: 100%; background: #1d4ed8; color: #fff; border: none; padding: 12px; border-radius: 8px; font-size: 15px; font-weight: 700; cursor: pointer; }
+        .login-box .err { color: #dc2626; font-size: 13px; margin-top: 8px; }
+        #main { display: none; }
+    </style>
+</head>
+<body>
+
+<div id="login-screen">
+    <div class="login-box">
+        <h2>Admin Login</h2>
+        <input type="password" id="secret-input" placeholder="Enter admin secret" />
+        <button onclick="doLogin()">Login</button>
+        <div class="err" id="login-err"></div>
+    </div>
+</div>
+
+<div id="main">
+    <h1>Early Access Requests <span class="badge" id="count-badge">0</span></h1>
+    <p class="subtitle">Copy each Gmail and add to Google Cloud Console → OAuth consent screen → Test users</p>
+    <table id="requests-table">
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>Name</th>
+                <th>Gmail</th>
+                <th>Submitted</th>
+                <th>Action</th>
+            </tr>
+        </thead>
+        <tbody id="requests-body">
+            <tr><td colspan="5" class="empty">Loading...</td></tr>
+        </tbody>
+    </table>
+</div>
+
+<script>
+    let adminSecret = '';
+
+    function doLogin() {
+        const val = document.getElementById('secret-input').value.trim();
+        if (!val) return;
+        adminSecret = val;
+        loadRequests();
+    }
+
+    document.getElementById('secret-input').addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') doLogin();
+    });
+
+    async function loadRequests() {
+        try {
+            const res = await fetch(`/api/admin/early-access?secret=${encodeURIComponent(adminSecret)}`);
+            if (res.status === 401) {
+                document.getElementById('login-err').textContent = 'Wrong secret.';
+                return;
+            }
+            const data = await res.json();
+            document.getElementById('login-screen').style.display = 'none';
+            document.getElementById('main').style.display = 'block';
+            document.getElementById('count-badge').textContent = data.count;
+            const tbody = document.getElementById('requests-body');
+            if (data.requests.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="5" class="empty">No requests yet.</td></tr>';
+                return;
+            }
+            tbody.innerHTML = data.requests.map((r, i) => `
+                <tr>
+                    <td>${i + 1}</td>
+                    <td>${escHtml(r.name)}</td>
+                    <td>${escHtml(r.email)}</td>
+                    <td>${new Date(r.created_at).toLocaleString()}</td>
+                    <td><button class="copy-btn" onclick="copyEmail(this, '${escHtml(r.email)}')">Copy Gmail</button></td>
+                </tr>
+            `).join('');
+        } catch (err) {
+            document.getElementById('login-err').textContent = 'Failed to connect.';
+        }
+    }
+
+    function copyEmail(btn, email) {
+        navigator.clipboard.writeText(email);
+        btn.textContent = 'Copied!';
+        btn.classList.add('copied');
+        setTimeout(() => { btn.textContent = 'Copy Gmail'; btn.classList.remove('copied'); }, 2000);
+    }
+
+    function escHtml(str) {
+        return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+</script>
+</body>
+</html>
