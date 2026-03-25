@@ -142,6 +142,7 @@ function ensureDbTables() {
   if (!db.data.appointments) db.data.appointments = [];
   if (!db.data.subscriptions) db.data.subscriptions = [];
   if (!db.data.email_interactions) db.data.email_interactions = [];
+  if (!db.data.early_access_requests) db.data.early_access_requests = [];
 }
 
 // Read database and ensure all tables exist
@@ -352,6 +353,26 @@ app.post('/api/test-classify', async (req, res) => {
   console.log('=============================\n');
 
   res.json(analysis);
+});
+
+// Public: Request Early Access
+app.post('/api/early-access', async (req, res) => {
+  const { name, email } = req.body;
+  if (!name || !email) return res.status(400).json({ error: 'Name and email are required.' });
+  const existing = db.data.early_access_requests.find(r => r.email.toLowerCase() === email.toLowerCase());
+  if (existing) return res.json({ success: true, message: 'Already on the list!' });
+  const request = { id: Date.now(), name, email, created_at: new Date().toISOString() };
+  db.data.early_access_requests.push(request);
+  await db.write();
+  console.log(`🎉 Early access request: ${name} <${email}>`);
+  res.json({ success: true, message: 'You\'re on the list!' });
+});
+
+// Admin: View early access requests (protected by ADMIN_SECRET env var)
+app.get('/api/admin/early-access', async (req, res) => {
+  const secret = process.env.ADMIN_SECRET || 'ztm-admin-2026';
+  if (req.query.secret !== secret) return res.status(401).json({ error: 'Unauthorized' });
+  res.json({ count: db.data.early_access_requests.length, requests: db.data.early_access_requests });
 });
 
 app.post('/api/auth/register', async (req, res) => {

@@ -31,6 +31,16 @@
         .cta h2 { font-size: 28px; font-weight: 700; margin-bottom: 12px; }
         .cta p { font-size: 16px; margin-bottom: 28px; opacity: 0.85; }
         .cta a { background: #fff; color: #1d4ed8; padding: 14px 32px; border-radius: 8px; text-decoration: none; font-size: 16px; font-weight: 700; display: inline-block; }
+        .early-access { text-align: center; padding: 60px 32px; background: #f0f9ff; border-top: 1px solid #e0f2fe; }
+        .early-access h2 { font-size: 28px; font-weight: 700; margin-bottom: 10px; color: #111827; }
+        .early-access p { font-size: 16px; color: #6b7280; margin-bottom: 28px; }
+        .early-access form { display: flex; flex-direction: column; gap: 12px; max-width: 400px; margin: 0 auto; }
+        .early-access input { padding: 12px 16px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 15px; outline: none; }
+        .early-access input:focus { border-color: #1d4ed8; }
+        .early-access button { background: #1d4ed8; color: #fff; padding: 13px; border: none; border-radius: 8px; font-size: 16px; font-weight: 700; cursor: pointer; }
+        .early-access button:hover { background: #1e40af; }
+        .early-access .success { color: #16a34a; font-weight: 600; font-size: 16px; margin-top: 12px; display: none; }
+        .early-access .error-msg { color: #dc2626; font-size: 14px; margin-top: 8px; display: none; }
         footer { text-align: center; padding: 24px; font-size: 13px; color: #9ca3af; background: #f9fafb; border-top: 1px solid #e5e7eb; }
         footer a { color: #6b7280; text-decoration: underline; margin: 0 8px; }
     </style>
@@ -45,7 +55,7 @@
 <section class="hero">
     <h2>Recover Lost Leads Automatically</h2>
     <p>ZeroTouch Mail AI connects to your Gmail account and automatically follows up with unresponsive leads using AI-powered personalized emails — so you never lose a deal to silence.</p>
-    <a href="/app">Get Started Free</a>
+    <a href="#early-access">Request Early Access</a>
 </section>
 
 <section class="features">
@@ -93,10 +103,22 @@
     </div>
 </section>
 
+<section class="early-access" id="early-access">
+    <h2>Request Early Access</h2>
+    <p>We're currently in early access. Enter your details and we'll approve your account within 24 hours.</p>
+    <form id="earlyAccessForm">
+        <input type="text" id="ea-name" placeholder="Your name" required />
+        <input type="email" id="ea-email" placeholder="Your Gmail address" required />
+        <button type="submit" id="ea-btn">Request Access</button>
+        <div class="success" id="ea-success">You're on the list! We'll email you within 24 hours.</div>
+        <div class="error-msg" id="ea-error"></div>
+    </form>
+</section>
+
 <section class="cta">
-    <h2>Start Recovering Lost Leads Today</h2>
-    <p>Join sales teams, real estate agents, and consultants who use ZeroTouch Mail AI to automate their follow-up workflow.</p>
-    <a href="/app">Get Started</a>
+    <h2>Already have access?</h2>
+    <p>Sign in and start recovering lost leads on autopilot.</p>
+    <a href="/app">Go to App</a>
 </section>
 
 <footer>
@@ -106,5 +128,37 @@
     </p>
 </footer>
 
+<script>
+    document.getElementById('earlyAccessForm').addEventListener('submit', async function(e) {
+        e.preventDefault();
+        const btn = document.getElementById('ea-btn');
+        const name = document.getElementById('ea-name').value.trim();
+        const email = document.getElementById('ea-email').value.trim();
+        btn.textContent = 'Sending...';
+        btn.disabled = true;
+        document.getElementById('ea-error').style.display = 'none';
+        try {
+            const res = await fetch('/api/early-access', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name, email })
+            });
+            const data = await res.json();
+            if (data.success) {
+                document.getElementById('earlyAccessForm').querySelector('input, button').disabled = true;
+                document.getElementById('ea-success').style.display = 'block';
+                btn.style.display = 'none';
+            } else {
+                throw new Error(data.error || 'Something went wrong');
+            }
+        } catch (err) {
+            const errEl = document.getElementById('ea-error');
+            errEl.textContent = err.message;
+            errEl.style.display = 'block';
+            btn.textContent = 'Request Access';
+            btn.disabled = false;
+        }
+    });
+</script>
 </body>
 </html>
